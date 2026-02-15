@@ -11,6 +11,7 @@ class Device(Base):
     status = Column(String, default="OK")
 
     readings = relationship("SensorReading", back_populates="device")
+    registers = relationship("PLCRegisterMap", back_populates="device")
     
 
 class SensorReading(Base):
@@ -23,3 +24,13 @@ class SensorReading(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
     
     device = relationship("Device", back_populates="readings")
+
+
+class PLCRegisterMap(Base):
+    __tablename__ = "plc_register_map"
+
+    id = Column(Integer, primary_key=True)
+    register_address = Column(Integer, unique=True)
+    device_id = Column(Integer, ForeignKey("devices.id"))
+
+    device = relationship("Device", back_populates="registers")

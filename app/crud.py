@@ -20,4 +20,20 @@ def create_sensor_reading(db: Session, reading: schemas.SensorReadingCreate):
 def get_devices(db: Session):
     return db.query(models.Device).all()
 
+
+def create_register_map(db: Session, mapping: schemas.RegisterMapCreate):
+    db_map = models.PLCRegisterMap(
+        register_address=mapping.register_address,
+        device_id=mapping.device_id
+    )
+    db.add(db_map)
+    db.commit()
+    return db_map
+
     
+def get_device_by_register(db: Session, register_address: int):
+    return (
+        db.query(models.PLCRegisterMap)
+        .filter(models.PLCRegisterMap.register_address == register_address)
+        .first()
+    )

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/sensors", tags=["sensors"])
 
+#reading accepts JSON
 @router.post("/reading", response_model=schemas.SensorReadingResponse)
 def ingest_reading(
     reading: schemas.SensorReadingCreate, 

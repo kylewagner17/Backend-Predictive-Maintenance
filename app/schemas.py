@@ -25,3 +25,10 @@ class DeviceResponse(DeviceCreate):
 
     class Config:
         orm_mode = True
+
+
+class RegisterMapCreate(BaseModel):
+    register_address: int
+    device_id: int
+
+
