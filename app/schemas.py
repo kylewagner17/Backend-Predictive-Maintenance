@@ -32,3 +32,18 @@ class RegisterMapCreate(BaseModel):
     device_id: int
 
 
+class MaintenancePredictionCreate(BaseModel):
+    device_id: int
+    recommendation: str
+    confidence: float | None = None
+    details: str | None = None
+
+
+class MaintenancePredictionResponse(MaintenancePredictionCreate):
+    id: int
+    predicted_at: datetime
+
+    class Config:
+        from_attributes = True
+
+

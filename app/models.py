@@ -34,3 +34,17 @@ class PLCRegisterMap(Base):
     device_id = Column(Integer, ForeignKey("devices.id"))
 
     device = relationship("Device", back_populates="registers")
+
+
+class MaintenancePrediction(Base):
+    """Output of analysis: predicted need for maintenance per device."""
+    __tablename__ = "maintenance_predictions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id"), index=True)
+    predicted_at = Column(DateTime, default=datetime.utcnow)
+    recommendation = Column(String)  # e.g. "OK", "INSPECT_SOON", "MAINTENANCE_REQUIRED"
+    confidence = Column(Float, nullable=True)  # 0–1 if your model outputs it
+    details = Column(String, nullable=True)  # JSON or text summary for debugging
+
+    device = relationship("Device", backref="predictions")

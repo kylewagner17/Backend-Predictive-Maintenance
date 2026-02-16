@@ -1,27 +1,22 @@
+import time
 from pymodbus.client import ModbusTcpClient
+
+from app.config import settings
 from app.database import SessionLocal
 from app import crud, schemas
-import time
 
-#change to the actual PLC IP address
-PLC_IP = "127.0.0.1"
-PLC_PORT = 5020
-START_REGISTER = 0
-REGISTER_COUNT = 4
 
 def poll_plc():
-    client = ModbusTcpClient(PLC_IP, port=PLC_PORT)
+    client = ModbusTcpClient(settings.plc_host, port=settings.plc_port)
 
     if not client.connect():
         print("PLC connection failed")
         return
 
-    # Use device_id=1; many Modbus stacks treat device_id=0 as broadcast (no read response)
-    # and return Illegal Data Address (exception code 2) for reads to unit 0.
     result = client.read_holding_registers(
-        address=START_REGISTER,
-        count=REGISTER_COUNT,
-        device_id=1
+        address=settings.plc_start_register,
+        count=settings.plc_register_count,
+        device_id=settings.plc_device_id,
     )
 
     print("Raw result:", result)
@@ -41,7 +36,7 @@ def poll_plc():
 
     try:
         for offset, value in enumerate(registers):
-            register_address = START_REGISTER + offset
+            register_address = settings.plc_start_register + offset
 
             mapping = crud.get_device_by_register(db, register_address)
 
@@ -68,3 +63,4 @@ def plc_loop():
             poll_plc()
         except Exception as e:
             print("PLC loop crashed:", e)
+        time.sleep(settings.plc_poll_interval_seconds)
