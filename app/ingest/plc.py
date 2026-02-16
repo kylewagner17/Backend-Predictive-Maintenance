@@ -49,11 +49,18 @@ def poll_plc():
                 )
                 crud.create_sensor_reading(db, reading)
 
+        print("PLC values saved:", registers)
+
+    except Exception as e:
+        print("Database error:", e)
+
     finally:
         db.close()
 
 
 def plc_loop():
     while True:
-        poll_plc()
-        time.sleep(5)
+        try:
+            poll_plc()
+        except Exception as e:
+            print("PLC loop crashed:", e)
