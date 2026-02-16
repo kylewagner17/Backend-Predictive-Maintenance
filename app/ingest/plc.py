@@ -4,7 +4,7 @@ from app import crud, schemas
 import time
 
 #change to the actual PLC IP address
-PLC_IP = "localhost"
+PLC_IP = "127.0.0.1"
 PLC_PORT = 5020
 START_REGISTER = 0
 REGISTER_COUNT = 4
@@ -22,6 +22,9 @@ def poll_plc():
         count=REGISTER_COUNT,
         device_id=0
     )
+
+    print("Raw result:", result)
+    print("Is error:", result.isError())
 
     if result.isError():
         print("Modbus read error")

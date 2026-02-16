@@ -11,4 +11,4 @@ device_context = ModbusDeviceContext(hr=data_block)
 context = ModbusServerContext(devices=device_context, single=True)
 
 print("Starting Modbus test server on port 5020...")
-StartTcpServer(context, address=("localhost", 5020))
+StartTcpServer(context, address=("0.0.0.0", 5020))
