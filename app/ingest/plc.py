@@ -11,11 +11,20 @@ REGISTER_COUNT = 4
 
 def poll_plc():
     client = ModbusTcpClient(PLC_IP, port=PLC_PORT)
-    client.connect()
+    if not client.connect():
+        print("PLC connection failed")
+        return
 
-    result = client.read_holding_registers(START_REGISTER, REGISTER_COUNT)
-    registers = result.registers
+    result = client.read_holding_registers(
+        address=START_REGISTER,
+        count=REGISTER_COUNT,
+        slave=1
+    )
 
+    if result.isError():
+        print("Error reading PLC registers")
+    else:
+        print("Registers:", result.registers)
     client.close()
 
     db = SessionLocal()
