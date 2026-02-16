@@ -3,8 +3,10 @@ from pymodbus.datastore import ModbusSequentialDataBlock
 from pymodbus.datastore import ModbusDeviceContext
 from pymodbus.datastore import ModbusServerContext
 
-# Create holding registers starting at address 0
-data_block = ModbusSequentialDataBlock(0, [10, 20, 30, 40])
+# ModbusDeviceContext uses 1-based addressing (adds 1 to client address).
+# Client sends address=0 for "first register" → context asks store for address 1.
+# So create the block starting at 1 so addresses 1–4 exist for read 0, count 4.
+data_block = ModbusSequentialDataBlock(1, [10, 20, 30, 40])
 
 device_context = ModbusDeviceContext(hr=data_block)
 
