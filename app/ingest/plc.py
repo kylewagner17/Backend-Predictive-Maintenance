@@ -20,7 +20,7 @@ def poll_plc():
     result = client.read_holding_registers(
         address=START_REGISTER,
         count=REGISTER_COUNT,
-        device_id=1
+        device_id=0
     )
 
     if result.isError():
