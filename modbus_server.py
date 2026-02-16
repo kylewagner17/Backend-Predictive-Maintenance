@@ -8,6 +8,8 @@ data_block = ModbusSequentialDataBlock(0, [10, 20, 30, 40])
 
 device_context = ModbusDeviceContext(hr=data_block)
 
+# single=True: one context for all unit IDs. Clients should use device_id=1
+# (device_id=0 is often treated as broadcast and can cause Illegal Data Address on read).
 context = ModbusServerContext(devices=device_context, single=True)
 
 print("Starting Modbus test server on port 5020...")

@@ -11,16 +11,17 @@ REGISTER_COUNT = 4
 
 def poll_plc():
     client = ModbusTcpClient(PLC_IP, port=PLC_PORT)
-    client.connect()
 
     if not client.connect():
         print("PLC connection failed")
         return
 
+    # Use device_id=1; many Modbus stacks treat device_id=0 as broadcast (no read response)
+    # and return Illegal Data Address (exception code 2) for reads to unit 0.
     result = client.read_holding_registers(
         address=START_REGISTER,
         count=REGISTER_COUNT,
-        device_id=0
+        device_id=1
     )
 
     print("Raw result:", result)
