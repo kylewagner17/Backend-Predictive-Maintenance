@@ -1,5 +1,6 @@
-from pydantic import BaseModel
 from datetime import datetime
+
+from pydantic import BaseModel, EmailStr
 
 class SensorReadingCreate(BaseModel):
     device_id: int
@@ -27,8 +28,8 @@ class DeviceResponse(DeviceCreate):
         orm_mode = True
 
 
-class RegisterMapCreate(BaseModel):
-    register_address: int
+class TagMapCreate(BaseModel):
+    tag_name: str
     device_id: int
 
 
@@ -42,6 +43,33 @@ class MaintenancePredictionCreate(BaseModel):
 class MaintenancePredictionResponse(MaintenancePredictionCreate):
     id: int
     predicted_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PushSubscriptionCreate(BaseModel):
+    token: str
+    device_id: int | None = None  # None = all devices
+    platform: str | None = None  # "ios" | "android"
+
+
+class PushSubscriptionResponse(PushSubscriptionCreate):
+    id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class EmailSubscriptionCreate(BaseModel):
+    email: EmailStr
+    device_id: int | None = None  # None = all devices
+
+
+class EmailSubscriptionResponse(EmailSubscriptionCreate):
+    id: int
+    created_at: datetime
 
     class Config:
         from_attributes = True

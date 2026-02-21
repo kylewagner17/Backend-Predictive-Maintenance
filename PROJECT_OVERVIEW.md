@@ -2,15 +2,15 @@
 
 ## Intended flow
 
-1. **PLC sensor data** → Modbus TCP read (holding registers) in `app/ingest/plc.py`.
-2. **Backend** → Maps registers to devices via `plc_register_map`, writes values to `sensor_readings`.
+1. **PLC sensor data** → Allen-Bradley CompactLogix (EtherNet/IP) via pycomm3 in `app/ingest/plc.py`; reads controller tags.
+2. **Backend** → Maps tag names to devices via `plc_tag_map`, writes values to `sensor_readings`.
 3. **Database** → PostgreSQL stores devices, sensor_readings, and maintenance_predictions.
 4. **Analysis** → Logic in `app/analysis/` reads recent readings, runs your model, writes to `maintenance_predictions`. Trigger via `POST /analysis/run` or a scheduled job.
 
 ## What’s in place
 
-- **Ingest**: PLC poll loop with configurable host, port, registers, and poll interval (see `.env` / `app/config.py`).
-- **Models**: `Device`, `SensorReading`, `PLCRegisterMap`, `MaintenancePrediction`.
+- **Ingest**: PLC poll loop using pycomm3 LogixDriver; configurable PLC IP and poll interval (see `.env` / `app/config.py`).
+- **Models**: `Device`, `SensorReading`, `PLCTagMap`, `MaintenancePrediction`.
 - **API**: Health, devices, sensor readings (POST + GET by device), device predictions, and `POST /analysis/run`.
 - **Config**: PLC and DB settings via pydantic-settings (env vars / `.env`).
 
@@ -32,10 +32,10 @@
    Use **Alembic** for schema changes so you don’t rely only on `create_all` and can evolve the DB safely (e.g. new columns, indexes).
 
 4. **Seed script**  
-   `seed_devices.py` will fail on a second run (duplicate devices/registers). Make it idempotent (e.g. get_or_create by name, create register maps only if missing) or run it once and use migrations for future data changes.
+   `seed_devices.py` will fail on a second run (duplicate devices/tag maps). Make it idempotent (e.g. get_or_create by name, create tag maps only if missing) or run it once and use migrations for future data changes.
 
 5. **Production**  
-   - Set `PLC_*` and `DATABASE_URL` in the environment (or `.env`), not in code.
+   - Set `PLC_HOST` (CompactLogix IP) and `DATABASE_URL` in the environment (or `.env`), not in code.
    - Use `db_echo=False` (default now) so logs aren’t filled with SQL.
    - Consider turning off or reducing debug prints in `plc.py` (e.g. “Raw result”, “PLC values saved”) or gate them by a log level.
 
@@ -52,7 +52,6 @@
 ```env
 DATABASE_URL=postgresql://user:pass@host:5432/maintenance
 PLC_HOST=192.168.1.10
-PLC_PORT=502
 PLC_POLL_INTERVAL_SECONDS=10
 DB_ECHO=false
 ```

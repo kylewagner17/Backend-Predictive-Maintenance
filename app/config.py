@@ -4,18 +4,22 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     database_url: str = "postgresql://postgres:postgres@localhost:5432/maintenance"
 
-    # PLC Modbus connection (override via .env in production)
-    plc_host: str = "127.0.0.1"
-    plc_port: int = 5020
-    plc_start_register: int = 0
-    plc_register_count: int = 4
-    plc_device_id: int = 1
+    # Allen-Bradley CompactLogix (EtherNet/IP via pycomm3). Use PLC IP address.
+    plc_host: str = "192.168.1.10"
 
-    # How often to poll the PLC (seconds). Avoid flooding the PLC and DB.
     plc_poll_interval_seconds: float = 10.0
 
     # Set to True to log SQL (useful for dev; set False in production).
     db_echo: bool = False
+
+    notifications_enabled: bool = True
+
+    # Email (SMTP). Leave smtp_host empty to disable email sending.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    mail_from: str = ""  # e.g. "alerts@yourdomain.com"
 
     class Config:
         env_file = ".env"
