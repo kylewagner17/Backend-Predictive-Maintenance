@@ -13,6 +13,7 @@
 - **Models**: `Device`, `SensorReading`, `PLCTagMap`, `MaintenancePrediction`.
 - **API**: Health, devices, sensor readings (POST + GET by device), device predictions, and `POST /analysis/run`.
 - **Config**: PLC and DB settings via pydantic-settings (env vars / `.env`).
+- **Tests**: pytest with in-memory SQLite; API, CRUD, and analysis tests. See **TESTING.md** for running tests and TDD.
 
 ## Recommendations
 
