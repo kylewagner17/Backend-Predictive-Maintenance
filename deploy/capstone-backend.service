@@ -1,0 +1,17 @@
+[Unit]
+Description=Capstone Predictive Maintenance Backend (FastAPI + Uvicorn)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/PROJECTS/Capstone/Backend
+Environment="PATH=/home/pi/PROJECTS/Capstone/Backend/venv/bin"
+ExecStart=/home/pi/PROJECTS/Capstone/Backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

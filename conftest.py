@@ -1,8 +1,10 @@
 """
-Pytest fixtures: test DB (SQLite in-memory), overridden get_db, and API client.
+Pytest fixtures: test DB (SQLite) and API client.
 Set TESTING=1 so the app does not start the PLC poll thread.
+Use one file-based SQLite DB so the app and tests share the same database.
 """
 import os
+import tempfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,42 +14,46 @@ from sqlalchemy.orm import sessionmaker
 # Disable PLC loop before app is imported
 os.environ["TESTING"] = "1"
 
-from app.database import Base, get_db
-from app import models  # noqa: F401 - register all models with Base
-from app.main import app
-
-SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
+# Single file-based test DB so create_all() and request handlers use the same DB.
+# (In-memory SQLite can end up as two DBs due to import order; file ensures one shared DB.)
+_test_db_path = os.path.join(tempfile.gettempdir(), "capstone_test.db")
+if os.path.exists(_test_db_path):
+    try:
+        os.remove(_test_db_path)
+    except OSError:
+        pass
+SQLALCHEMY_DATABASE_URL = f"sqlite:///{_test_db_path}"
 test_engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     connect_args={"check_same_thread": False},
 )
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
+import app.database  # noqa: E402
+import app.models as models  # noqa: E402, F401 - register models with Base
+# Replace app's engine and session so the whole app uses the test DB.
+app.database.engine = test_engine
+app.database.SessionLocal = TestingSessionLocal
 
-def override_get_db():
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+from app.main import app  # noqa: E402
+# create_app() already ran and called create_all(bind=engine), so test DB now has tables.
 
 
 @pytest.fixture(scope="function")
 def db():
-    """Fresh DB session per test; tables created then dropped after test."""
-    Base.metadata.create_all(bind=test_engine)
+    """Fresh DB session per test; ensure tables exist, then drop after test for clean slate next time."""
+    # Ensure tables exist (create_app() already ran create_all on test_engine; recreate if dropped)
+    models.Base.metadata.create_all(bind=test_engine)
     session = TestingSessionLocal()
     try:
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=test_engine)
+        models.Base.metadata.drop_all(bind=test_engine)
 
 
 @pytest.fixture(scope="function")
 def client(db):
-    """API test client with get_db overridden to use in-memory SQLite."""
-    app.dependency_overrides[get_db] = override_get_db
+    """API test client using the same in-memory SQLite DB (no override needed)."""
     with TestClient(app) as c:
         yield c
-    app.dependency_overrides.pop(get_db, None)

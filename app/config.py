@@ -1,8 +1,18 @@
+import os
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     database_url: str = "postgresql://postgres:postgres@localhost:5432/maintenance"
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def use_sqlite_when_testing(cls, v: str) -> str:
+        if os.environ.get("TESTING") == "1":
+            return "sqlite:///:memory:"
+        return v
 
     # Allen-Bradley CompactLogix (EtherNet/IP via pycomm3). Use PLC IP address.
     plc_host: str = "192.168.1.10"
