@@ -8,14 +8,14 @@ from app import crud, schemas
 db = SessionLocal()
 
 DEVICES = [
-    "Laser_1",
+    "Timer_1",
     "Proximity_1",
 ]
 
 # Controller tag names exposed on the 1769-L16ER (must exist in the PLC).
 # Change these to match your actual tag names in the controller.
 TAG_NAMES = [
-    "Laser_1_Value",   # tag for first device
+    "Timer.ACC",   # tag for first device
     "Proximity_1_Value",  # tag for second device
 ]
 

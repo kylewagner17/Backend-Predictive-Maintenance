@@ -12,7 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 # Disable PLC loop before app is imported
-os.environ["TESTING"] = "1"
+os.environ["TESTING"] = "0"
 
 # Single file-based test DB so create_all() and request handlers use the same DB.
 # (In-memory SQLite can end up as two DBs due to import order; file ensures one shared DB.)

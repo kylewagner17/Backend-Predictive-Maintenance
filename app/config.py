@@ -15,7 +15,8 @@ class Settings(BaseSettings):
         return v
 
     # Allen-Bradley CompactLogix (EtherNet/IP via pycomm3). Use PLC IP address.
-    plc_host: str = "192.168.1.10"
+    plc_host: str = "192.168.0.4"
+    #.1.10 is previous
 
     plc_poll_interval_seconds: float = 10.0
 
