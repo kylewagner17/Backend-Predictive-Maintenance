@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr
 
 class SensorReadingCreate(BaseModel):
     device_id: int
@@ -9,11 +9,10 @@ class SensorReadingCreate(BaseModel):
 
 
 class SensorReadingResponse(SensorReadingCreate):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     timestamp: datetime
-
-    class Config:
-        orm_mode = True
 
 
 class DeviceCreate(BaseModel):
@@ -21,11 +20,10 @@ class DeviceCreate(BaseModel):
 
 
 class DeviceResponse(DeviceCreate):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     status: str
-
-    class Config:
-        orm_mode = True
 
 
 class TagMapCreate(BaseModel):

@@ -56,4 +56,14 @@ sudo journalctl -u capstone-backend.service -f
 - **PostgreSQL** installed and the `maintenance` database created; `.env` (or env) must have a correct `DATABASE_URL`.
 - **.env** in the Backend directory so the app loads `PLC_HOST`, `DATABASE_URL`, etc. on startup.
 
+### PostgreSQL password on the Pi
+
+If you see `password authentication failed for user "postgres"`, the password in `DATABASE_URL` does not match the PostgreSQL role. Set a password and match the URL, for example:
+
+```bash
+sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
+```
+
+Then use `postgresql://postgres:postgres@localhost:5432/maintenance` in `.env`, or pick a different password and put it in the URL (format: `postgresql://USER:PASSWORD@host:5432/maintenance`).
+
 The service starts after the network and PostgreSQL (`After=network-online.target postgresql.service`). If PostgreSQL is not installed as a systemd service or has a different name, remove or change `postgresql.service` in the unit file.
