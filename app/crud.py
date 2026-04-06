@@ -21,6 +21,10 @@ def get_devices(db: Session):
     return db.query(models.Device).all()
 
 
+def get_device_by_id(db: Session, device_id: int):
+    return db.query(models.Device).filter(models.Device.id == device_id).first()
+
+
 def create_tag_map(db: Session, mapping: schemas.TagMapCreate):
     existing = (
         db.query(models.PLCTagMap)

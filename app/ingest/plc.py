@@ -64,12 +64,12 @@ def poll_plc():
 
             fval = _tag_value_to_float(value)
             if fval is None:
-                lines.append(f"{line} → not saved (non-numeric)")
+                lines.append(f"{line} -> not saved (non-numeric)")
                 continue
 
             mapping = crud.get_device_by_tag(db, tag_name)
             if not mapping:
-                lines.append(f"{line} → not saved (no device mapping)")
+                lines.append(f"{line} -> not saved (no device mapping)")
                 continue
 
             reading = schemas.SensorReadingCreate(
@@ -79,7 +79,7 @@ def poll_plc():
             )
             crud.create_sensor_reading(db, reading)
             saved_count += 1
-            lines.append(f"{line} → saved as reading {fval}")
+            lines.append(f"{line} -> saved as reading {fval}")
 
         print("PLC poll — data read:")
         print("\n".join(lines))

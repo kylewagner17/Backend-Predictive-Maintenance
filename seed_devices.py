@@ -1,39 +1,47 @@
 """
-Seed devices and map controller tag names to devices.
-Create controller tags on the CompactLogix (e.g. DINT or REAL) and use those names below.
+Seed devices and PLC tag mappings (idempotent).
+
+Run manually: python seed_devices.py
+When the app starts with TESTING=1, ensure_demo_devices_seeded() runs from main.
 """
 from app.database import SessionLocal
-from app import crud, schemas
+from app import crud, models, schemas
 
-db = SessionLocal()
-
-DEVICES = [
-    "Timer_1",
-    "Proximity_1",
+# Example assets for predictive maintenance demos (names align with synthetic + analysis thresholds).
+DEVICE_TAG_PAIRS = [
+    ("Conveyor_Bearing_Vibration", "Conv_Bearing_Vib_mm_s"),
+    ("Pump_Discharge_Temperature", "Pump_Discharge_Temp_C"),
+    ("Spindle_Drive_Current", "Spindle_Drive_I_A"),
+    ("Line_Air_Pressure", "Line_AirPress_PSI"),
+    ("Coolant_Tank_Level", "Coolant_Tank_Level_Pct"),
+    ("Hydraulic_System_Pressure", "Hydraulic_Press_PSI"),
 ]
 
-# Controller tag names exposed on the 1769-L16ER (must exist in the PLC).
-# Change these to match your actual tag names in the controller.
-TAG_NAMES = [
-    "Timer.ACC",   # tag for first device
-    "Proximity_1_Value",  # tag for second device
-]
 
-created_devices = []
+def ensure_demo_devices_seeded(db) -> None:
+    """Create devices and tag maps if missing; update tag map device_id if tag exists."""
+    for device_name, tag_name in DEVICE_TAG_PAIRS:
+        existing = (
+            db.query(models.Device).filter(models.Device.name == device_name).first()
+        )
+        if existing:
+            device = existing
+        else:
+            device = crud.create_device(db, schemas.DeviceCreate(name=device_name))
+        crud.create_tag_map(
+            db,
+            schemas.TagMapCreate(tag_name=tag_name, device_id=device.id),
+        )
 
-for name in DEVICES:
-    device = crud.create_device(db, schemas.DeviceCreate(name=name))
-    created_devices.append(device)
 
-for i, tag_name in enumerate(TAG_NAMES):
-    if i >= len(created_devices):
-        break
-    crud.create_tag_map(
-        db,
-        schemas.TagMapCreate(
-            tag_name=tag_name,
-            device_id=created_devices[i].id,
-        ),
-    )
+def main() -> None:
+    db = SessionLocal()
+    try:
+        ensure_demo_devices_seeded(db)
+        print("Seed complete (devices + plc_tag_map).")
+    finally:
+        db.close()
 
-db.close()
+
+if __name__ == "__main__":
+    main()

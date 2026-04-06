@@ -47,7 +47,7 @@ def notify_subscribers_on_recommendation_change(
         return
 
     title = "Maintenance status changed"
-    body = f"{device_name}: {old_recommendation or 'N/A'} → {new_recommendation}"
+    body = f"{device_name}: {old_recommendation or 'N/A'} -> {new_recommendation}"
 
     # Push (stub until FCM/APNs implemented)
     if getattr(settings, "notifications_enabled", True):
