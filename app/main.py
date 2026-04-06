@@ -3,6 +3,7 @@ import threading
 
 from fastapi import FastAPI
 
+from app.config import settings
 from app.database import SessionLocal, engine
 from app import models
 from app.api import health, sensors, analysis, notifications
@@ -19,10 +20,11 @@ def create_app(run_plc_loop: bool | None = None) -> FastAPI:
     - Otherwise: PLC poll thread when run_plc_loop is True.
     """
     if run_plc_loop is None:
-        run_plc_loop = not os.environ.get("TESTING")
+        # Any TESTING in os.environ (e.g. pytest conftest sets "0") disables PLC.
+        # settings.testing (from .env TESTING=1) is POC mode and also disables PLC.
+        run_plc_loop = not os.environ.get("TESTING") and not settings.testing
     models.Base.metadata.create_all(bind=engine)
-    testing = os.environ.get("TESTING") == "1"
-    if testing:
+    if settings.testing:
         from seed_devices import ensure_demo_devices_seeded
 
         db = SessionLocal()
@@ -38,7 +40,7 @@ def create_app(run_plc_loop: bool | None = None) -> FastAPI:
     app.include_router(devices_router)
     app.include_router(analysis.router)
     app.include_router(notifications.router)
-    if testing:
+    if settings.testing:
         threading.Thread(target=synthetic_loop, daemon=True).start()
     elif run_plc_loop:
         threading.Thread(target=plc_loop, daemon=True).start()
