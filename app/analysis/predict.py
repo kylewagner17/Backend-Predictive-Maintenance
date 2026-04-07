@@ -4,6 +4,7 @@ Logs each result to the console for demonstration.
 """
 from __future__ import annotations
 
+import os
 from statistics import mean, pstdev
 
 from sqlalchemy.orm import Session
@@ -26,6 +27,25 @@ _DEFAULT_WARN = 500.0
 _DEFAULT_CRIT = 1000.0
 _MIN_SAMPLES_TREND = 5
 _WINDOW = 40
+
+
+def _log_analysis_dataset_enabled() -> bool:
+    """Full sample listing for pytest runs or when ANALYSIS_LOG_DATASET=1."""
+    if os.environ.get("ANALYSIS_LOG_DATASET", "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
+
+def _print_analysis_dataset(device_id: int, device_name: str, readings) -> None:
+    """Print readings window used by _evaluate_device (newest first, same order as crud query)."""
+    lines = [
+        f"[ANALYSIS] dataset device_id={device_id} name={device_name!r} "
+        f"n={len(readings)} samples (newest first, limit={_WINDOW}):"
+    ]
+    for i, r in enumerate(readings):
+        ts = r.timestamp.isoformat() if hasattr(r.timestamp, "isoformat") else r.timestamp
+        lines.append(f"  [{i}] ts={ts}  reading={r.reading!r}  status={r.status!r}")
+    print("\n".join(lines))
 
 
 def _slope_simple(values_oldest_to_newest: list[float]) -> float:
@@ -100,6 +120,8 @@ def run_predictions_for_device(db: Session, device_id: int) -> None:
 
     device = crud.get_device_by_id(db, device_id)
     device_name = device.name if device else f"device_{device_id}"
+    if _log_analysis_dataset_enabled():
+        _print_analysis_dataset(device_id, device_name, readings)
     values_nf = [r.reading for r in readings]
     recommendation, confidence, details = _evaluate_device(device_name, values_nf)
 
@@ -126,7 +148,7 @@ def run_predictions_for_device(db: Session, device_id: int) -> None:
 
 def run_predictions_all_devices(db: Session) -> None:
     devices = crud.get_devices(db)
-    print(f"[ANALYSIS] Running predictions for {len(devices)} device(s)…")
+    print(f"[ANALYSIS] Running predictions for {len(devices)} device(s)...")
     for d in devices:
         run_predictions_for_device(db, d.id)
     print("[ANALYSIS] Cycle complete.")

@@ -1,6 +1,6 @@
 import os
 
-from pydantic import AliasChoices, Field, field_validator, ValidationInfo
+from pydantic import AliasChoices, Field, field_validator, model_validator, ValidationInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,12 +33,24 @@ class Settings(BaseSettings):
     @field_validator("database_url", mode="before")
     @classmethod
     def use_sqlite_when_testing(cls, v: str, info: ValidationInfo) -> str:
+        # May be incomplete during settings merge; model_validator below enforces SQLite.
         if info.data.get("testing"):
             return os.environ.get(
                 "TESTING_DATABASE_URL",
                 "sqlite:///./poc_maintenance.db",
             )
         return v
+
+    @model_validator(mode="after")
+    def force_sqlite_database_url_when_testing(self):
+        """Ensure POC mode never uses PostgreSQL even if DATABASE_URL was set from the environment."""
+        if self.testing:
+            sqlite_url = os.environ.get(
+                "TESTING_DATABASE_URL",
+                "sqlite:///./poc_maintenance.db",
+            )
+            object.__setattr__(self, "database_url", sqlite_url)
+        return self
 
     # Allen-Bradley CompactLogix (EtherNet/IP via pycomm3). Use PLC IP address.
     plc_host: str = "192.168.0.4"

@@ -16,6 +16,7 @@ idna==3.11
 iniconfig==2.3.0
 packaging==26.0
 pluggy==1.6.0
+# PostgreSQL driver (production). POC with TESTING=1 uses SQLite built into Python; this can stay for when you use Postgres.
 psycopg2-binary==2.9.11
 pycomm3==1.2.14
 pydantic==2.12.5

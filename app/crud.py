@@ -91,7 +91,10 @@ def get_latest_two_predictions_for_device(db: Session, device_id: int):
     rows = (
         db.query(models.MaintenancePrediction)
         .filter(models.MaintenancePrediction.device_id == device_id)
-        .order_by(models.MaintenancePrediction.predicted_at.desc())
+        .order_by(
+            models.MaintenancePrediction.predicted_at.desc(),
+            models.MaintenancePrediction.id.desc(),
+        )
         .limit(2)
         .all()
     )
