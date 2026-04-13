@@ -1,17 +1,23 @@
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
 
 class SensorReadingCreate(BaseModel):
     device_id: int
     reading: float
     status: str
+    recorded_at: datetime | None = None
 
 
-class SensorReadingResponse(SensorReadingCreate):
+class SensorReadingResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    device_id: int
+    reading: float
+    status: str
     timestamp: datetime
 
 
@@ -24,6 +30,7 @@ class DeviceResponse(DeviceCreate):
 
     id: int
     status: str
+    status_updated_at: datetime | None = None
 
 
 class TagMapCreate(BaseModel):
@@ -31,45 +38,57 @@ class TagMapCreate(BaseModel):
     device_id: int
 
 
+class StatusTagMapCreate(BaseModel):
+    tag_name: str
+    device_id: int
+
+
+class StatusTagMapResponse(StatusTagMapCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+
+
 class MaintenancePredictionCreate(BaseModel):
     device_id: int
     recommendation: str
     confidence: float | None = None
     details: str | None = None
+    readings_snapshot: list[dict[str, Any]] | None = None
 
 
-class MaintenancePredictionResponse(MaintenancePredictionCreate):
+class MaintenancePredictionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
+    device_id: int
     predicted_at: datetime
-
-    class Config:
-        from_attributes = True
+    recommendation: str
+    confidence: float | None = None
+    details: str | None = None
+    readings_snapshot: list[dict[str, Any]] | None = None
 
 
 class PushSubscriptionCreate(BaseModel):
     token: str
-    device_id: int | None = None  # None = all devices
-    platform: str | None = None  # "ios" | "android"
+    device_id: int | None = None
+    platform: str | None = None
 
 
 class PushSubscriptionResponse(PushSubscriptionCreate):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class EmailSubscriptionCreate(BaseModel):
     email: EmailStr
-    device_id: int | None = None  # None = all devices
+    device_id: int | None = None
 
 
 class EmailSubscriptionResponse(EmailSubscriptionCreate):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-

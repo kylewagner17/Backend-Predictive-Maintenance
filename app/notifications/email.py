@@ -1,10 +1,4 @@
-"""
-Send email via SMTP when recommendation status changes.
-
-Configure SMTP in .env: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, MAIL_FROM.
-Works with Gmail (use an app password), SendGrid, Mailgun, or any SMTP server.
-If SMTP_HOST is empty, emails are logged only and not sent.
-"""
+"""SMTP mail (STARTTLS on 587 by default). Set SMTP_* and MAIL_FROM in .env."""
 from __future__ import annotations
 
 import logging
@@ -18,12 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 def send_email(to_email: str, subject: str, body: str) -> bool:
-    """
-    Send a single email via SMTP (STARTTLS on port 587 by default).
-
-    Returns True if sent successfully, False otherwise.
-    If smtp_host is not configured, logs and returns True (no-op).
-    """
     if not settings.smtp_host:
         logger.info("Email (SMTP not configured): to=%s subject=%s body=%s", to_email, subject, body)
         return True

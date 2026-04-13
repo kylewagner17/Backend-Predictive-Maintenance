@@ -1,16 +1,18 @@
-"""
-Allen-Bradley CompactLogix ingestion via pycomm3 (EtherNet/IP).
-Reads controller tags and writes values to sensor_readings using plc_tag_map.
-"""
+"""CompactLogix ingest: read mapped tags, persist floats to sensor_readings."""
+
+import logging
 import time
-from pycomm3 import LogixDriver
+
+from app import crud, schemas
 from app.config import settings
 from app.database import SessionLocal
-from app import crud, schemas
+from app.ingest.plc_connection import logix_driver_session
+from app.industrial.retry import retry_with_backoff
+
+logger = logging.getLogger(__name__)
 
 
 def _tag_value_to_float(value) -> float | None:
-    """Convert tag value to float; return None if not numeric."""
     if value is None:
         return None
     try:
@@ -19,25 +21,31 @@ def _tag_value_to_float(value) -> float | None:
         return None
 
 
-def poll_plc():
+def poll_plc() -> None:
     db = SessionLocal()
     try:
         mappings = crud.get_all_tag_mappings(db)
         if not mappings:
-            print("PLC poll: skipped (no tag mappings configured).")
+            logger.info("PLC poll skipped (no tag mappings configured)")
             return
 
         tag_names = [m.tag_name for m in mappings]
 
-        try:
-            with LogixDriver(settings.plc_host) as plc:
-                results = plc.read(*tag_names)
+        def _read_tags():
+            with logix_driver_session() as plc:
+                return plc.read(*tag_names)
 
+        try:
+            results = retry_with_backoff(
+                _read_tags,
+                attempts=max(1, settings.plc_retry_attempts),
+                base_delay_sec=settings.plc_retry_base_delay_seconds,
+                operation_name="PLC tag read",
+            )
         except Exception as e:
-            print("PLC connection/read error:", e)
+            logger.error("PLC connection/read failed after retries: %s", e)
             return
 
-        # pycomm3 read() returns list of Tag (tag, value, type, error)
         result_list = (
             results
             if results is not None and isinstance(results, list)
@@ -45,7 +53,7 @@ def poll_plc():
         )
 
         if not result_list:
-            print("PLC poll: no data received (empty response from controller).")
+            logger.warning("PLC poll: empty response from controller")
             return
 
         lines: list[str] = []
@@ -54,7 +62,7 @@ def poll_plc():
             tag_name = item.tag
 
             if item.error:
-                lines.append(f"  {tag_name}: error — {item.error}")
+                lines.append(f"  {tag_name}: error - {item.error}")
                 continue
 
             value = item.value
@@ -81,24 +89,23 @@ def poll_plc():
             saved_count += 1
             lines.append(f"{line} -> saved as reading {fval}")
 
-        print("PLC poll — data read:")
-        print("\n".join(lines))
+        logger.info("PLC poll data read:\n%s", "\n".join(lines))
         if saved_count:
-            print(f"PLC poll: {saved_count} sensor reading(s) saved.")
+            logger.info("PLC poll: %s sensor reading(s) saved", saved_count)
         else:
-            print("PLC poll: no sensor readings saved (errors, unmapped tags, or non-numeric values).")
+            logger.info("PLC poll: no sensor readings saved")
 
     except Exception as e:
-        print("Database error:", e)
+        logger.exception("PLC poll database error: %s", e)
 
     finally:
         db.close()
 
 
-def plc_loop():
+def plc_loop() -> None:
     while True:
         try:
             poll_plc()
         except Exception as e:
-            print("PLC loop crashed:", e)
+            logger.exception("PLC loop crashed: %s", e)
         time.sleep(settings.plc_poll_interval_seconds)

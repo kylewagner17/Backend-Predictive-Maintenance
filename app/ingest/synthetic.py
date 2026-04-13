@@ -1,7 +1,4 @@
-"""
-Proof-of-concept synthetic sensor feed when TESTING=1.
-Writes realistic-ish time-series per device and logs each sample to the console.
-"""
+"""Synthetic sensor feed when TESTING=1 (matches seed_devices names)."""
 from __future__ import annotations
 
 import math
@@ -15,21 +12,24 @@ from app.database import SessionLocal
 from app.analysis.predict import run_predictions_all_devices
 
 
-# Simulation parameters keyed by device name (must match seed_devices entries).
+# post_escalate_noise: after escalate_after, noise stdev (0 = stable readings so analysis
+# can emit MAINTENANCE_REQUIRED, which needs two consecutive raw samples past critical).
 _PROFILES: dict[str, dict[str, Any]] = {
     "Conveyor_Bearing_Vibration": {
         "base": 2.2,
         "amp": 0.35,
         "noise": 0.08,
-        "escalate_after": 25,
-        "escalate_rate": 0.06,
+        "escalate_after": 10,
+        "escalate_rate": 0.28,
+        "post_escalate_noise": 0.0,
     },
     "Pump_Discharge_Temperature": {
         "base": 52.0,
         "amp": 0.4,
         "noise": 0.15,
-        "escalate_after": 20,
-        "escalate_rate": 0.35,
+        "escalate_after": 12,
+        "escalate_rate": 1.1,
+        "post_escalate_noise": 0.0,
     },
     "Spindle_Drive_Current": {
         "base": 11.5,
@@ -42,8 +42,9 @@ _PROFILES: dict[str, dict[str, Any]] = {
         "base": 87.0,
         "amp": 4.0,
         "noise": 0.5,
-        "escalate_after": 40,
-        "escalate_rate": -0.12,
+        "escalate_after": 22,
+        "escalate_rate": -0.55,
+        "post_escalate_noise": 0.0,
     },
     "Coolant_Tank_Level": {
         "base": 62.0,
@@ -56,8 +57,9 @@ _PROFILES: dict[str, dict[str, Any]] = {
         "base": 2100.0,
         "amp": 80.0,
         "noise": 25.0,
-        "escalate_after": 35,
-        "escalate_rate": 2.5,
+        "escalate_after": 15,
+        "escalate_rate": 48.0,
+        "post_escalate_noise": 0.0,
     },
 }
 
@@ -71,10 +73,14 @@ def _value_for_device(name: str, tick: int) -> float:
     )
     t = tick * 0.25
     wave = math.sin(t) * p["amp"]
-    noise = random.gauss(0, p["noise"])
     extra = 0.0
     if tick >= p["escalate_after"]:
         extra = (tick - p["escalate_after"]) * p["escalate_rate"]
+    if tick >= p["escalate_after"] and "post_escalate_noise" in p:
+        nstd = float(p["post_escalate_noise"])
+        noise = random.gauss(0, nstd)
+    else:
+        noise = random.gauss(0, p["noise"])
     return max(0.0, p["base"] + wave + noise + extra)
 
 
@@ -100,12 +106,12 @@ def _poll_synthetic_once() -> None:
 
 
 def synthetic_loop() -> None:
-    """Background loop: insert synthetic readings and periodically run analysis (POC)."""
     analysis_every = max(1, int(settings.poc_analysis_interval_seconds / max(settings.synthetic_poll_interval_seconds, 0.5)))
     cycle = 0
     print(
         "[SYNTHETIC] POC ingest started (interval="
-        f"{settings.synthetic_poll_interval_seconds}s, analysis every {analysis_every} cycle(s))"
+        f"{settings.synthetic_poll_interval_seconds}s, analysis every {analysis_every} cycle(s)); "
+        "Conveyor/Pump/Hydraulic escalate to MAINTENANCE_REQUIRED; Line_Air drops toward low-pressure fault."
     )
     while True:
         try:
@@ -114,7 +120,7 @@ def synthetic_loop() -> None:
             if cycle % analysis_every == 0:
                 db = SessionLocal()
                 try:
-                    print("[SYNTHETIC] Running predictive maintenance analysis…")
+                    print("[SYNTHETIC] Running predictive maintenance analysis...")
                     run_predictions_all_devices(db)
                 finally:
                     db.close()

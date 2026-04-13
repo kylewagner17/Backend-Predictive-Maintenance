@@ -1,8 +1,4 @@
-"""
-Pytest fixtures: test DB (SQLite) and API client.
-Set TESTING=1 so the app does not start the PLC poll thread.
-Use one file-based SQLite DB so the app and tests share the same database.
-"""
+"""SQLite file test DB shared with the imported app; disables PLC thread and scheduler via env."""
 import os
 import tempfile
 
@@ -11,8 +7,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-# Disable PLC loop before app is imported
+# Disable PLC loop and APScheduler before app is imported
 os.environ["TESTING"] = "0"
+os.environ["SCHEDULER_ENABLED"] = "0"
 
 # Single file-based test DB so create_all() and request handlers use the same DB.
 # (In-memory SQLite can end up as two DBs due to import order; file ensures one shared DB.)

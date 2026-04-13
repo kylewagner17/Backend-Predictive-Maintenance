@@ -7,9 +7,25 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # TESTING=1 in .env enables POC (SQLite + synthetic data). Read via Settings, not os.environ:
-    # pydantic-settings loads .env into the model but does not always export vars to os.environ.
+    # TESTING is parsed from .env here; it is not always exported to os.environ.
     testing: bool = Field(default=False, validation_alias=AliasChoices("TESTING", "testing"))
+
+    @field_validator("scheduler_enabled", mode="before")
+    @classmethod
+    def coerce_scheduler_enabled(cls, v):
+        if v is True or v == 1:
+            return True
+        if v is False or v == 0:
+            return False
+        if v is None or v == "":
+            return True
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("0", "false", "no", "off"):
+                return False
+            if s in ("1", "true", "yes", "on"):
+                return True
+        return bool(v)
 
     @field_validator("testing", mode="before")
     @classmethod
@@ -33,7 +49,6 @@ class Settings(BaseSettings):
     @field_validator("database_url", mode="before")
     @classmethod
     def use_sqlite_when_testing(cls, v: str, info: ValidationInfo) -> str:
-        # May be incomplete during settings merge; model_validator below enforces SQLite.
         if info.data.get("testing"):
             return os.environ.get(
                 "TESTING_DATABASE_URL",
@@ -43,7 +58,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def force_sqlite_database_url_when_testing(self):
-        """Ensure POC mode never uses PostgreSQL even if DATABASE_URL was set from the environment."""
         if self.testing:
             sqlite_url = os.environ.get(
                 "TESTING_DATABASE_URL",
@@ -52,22 +66,30 @@ class Settings(BaseSettings):
             object.__setattr__(self, "database_url", sqlite_url)
         return self
 
-    # Allen-Bradley CompactLogix (EtherNet/IP via pycomm3). Use PLC IP address.
     plc_host: str = "192.168.0.4"
-    #.1.10 is previous
-
     plc_poll_interval_seconds: float = 10.0
 
-    # POC synthetic ingest (used when TESTING=1)
+    plc_status_write_enabled: bool = True
+    plc_connect_timeout_seconds: float = 5.0
+    plc_retry_attempts: int = 3
+    plc_retry_base_delay_seconds: float = 1.0
+
+    scheduler_enabled: bool = Field(default=True, validation_alias=AliasChoices("SCHEDULER_ENABLED", "scheduler_enabled"))
+    maintenance_analysis_interval_minutes: float = 15.0
+
+    sensor_readings_retention_days: int = 90
+    retention_batch_size: int = 2000
+    retention_job_hour_utc: int = 2
+    retention_job_minute_utc: int = 30
+
     synthetic_poll_interval_seconds: float = 5.0
     poc_analysis_interval_seconds: float = 30.0
 
-    # Set to True to log SQL (useful for dev; set False in production).
     db_echo: bool = False
+    log_level: str = "INFO"
 
     notifications_enabled: bool = True
 
-    # Email (SMTP). Leave smtp_host empty to disable email sending.
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""

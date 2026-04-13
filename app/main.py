@@ -5,25 +5,31 @@ from fastapi import FastAPI
 
 from app.config import settings
 from app.database import SessionLocal, engine
+from app.device_storage import sync_tables_for_all_devices
 from app import models
 from app.api import health, sensors, analysis, notifications
 from app.api.devices import router as devices_router
+from app.industrial.logging_setup import configure_logging
 from app.ingest.plc import plc_loop
 from app.ingest.synthetic import synthetic_loop
 
+_scheduler = None
+
 
 def create_app(run_plc_loop: bool | None = None) -> FastAPI:
-    """
-    Build the FastAPI app.
-    - Tests: pass run_plc_loop=False (default when TESTING is set to any value in conftest).
-    - TESTING=1: SQLite POC DB, seed demo devices, synthetic readings + console analysis (no PLC).
-    - Otherwise: PLC poll thread when run_plc_loop is True.
-    """
+    """PLC thread off if os.environ TESTING is set (pytest) or settings.testing (POC)."""
+    global _scheduler
+
+    configure_logging(settings.log_level)
+
     if run_plc_loop is None:
-        # Any TESTING in os.environ (e.g. pytest conftest sets "0") disables PLC.
-        # settings.testing (from .env TESTING=1) is POC mode and also disables PLC.
         run_plc_loop = not os.environ.get("TESTING") and not settings.testing
     models.Base.metadata.create_all(bind=engine)
+    _db = SessionLocal()
+    try:
+        sync_tables_for_all_devices(_db)
+    finally:
+        _db.close()
     if settings.testing:
         from seed_devices import ensure_demo_devices_seeded
 
@@ -44,6 +50,12 @@ def create_app(run_plc_loop: bool | None = None) -> FastAPI:
         threading.Thread(target=synthetic_loop, daemon=True).start()
     elif run_plc_loop:
         threading.Thread(target=plc_loop, daemon=True).start()
+
+    if settings.scheduler_enabled and not settings.testing:
+        from app.jobs.scheduler import start_scheduler
+
+        _scheduler = start_scheduler()
+
     return app
 
 

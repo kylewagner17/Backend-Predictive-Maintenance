@@ -1,11 +1,4 @@
-"""
-Analysis (predictive maintenance) logic tests.
-Run with: pytest test_analysis.py -v
-
-Under pytest, each successful analysis logs the readings window (newest first) before
-the recommendation. Use `pytest test_analysis.py -v -s` to print that output to the terminal.
-Set ANALYSIS_LOG_DATASET=1 to log the same dataset when running analysis outside pytest.
-"""
+"""Analysis tests. Pytest sets PYTEST_CURRENT_TEST so the analyzed sample window is logged to stdout."""
 import time
 
 from app import crud, schemas
@@ -36,6 +29,9 @@ def test_run_predictions_for_device_sets_ok_below_threshold(db, capsys):
     preds = crud.get_predictions_for_device(db, dev.id)
     assert len(preds) == 1
     assert preds[0].recommendation == "OK"
+    snap = preds[0].readings_snapshot
+    assert snap is not None and len(snap) == 1
+    assert snap[0]["reading"] == 100.0 and snap[0]["row_status"] == "OK"
 
 
 def test_run_predictions_for_device_sets_inspect_soon_mid_range(db, capsys):
