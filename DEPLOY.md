@@ -1,69 +1,84 @@
-# Run the backend on boot (Raspberry Pi)
+# Running the backend on boot (Raspberry Pi)
 
-Use a systemd service so the app and uvicorn start automatically when the Pi boots.
+This walks through a **systemd** unit so Uvicorn comes up when the Pi boots. Same idea works on other Linux boxes; just fix the paths.
 
-## 1. Adjust paths in the service file
+## Before you enable the service
 
-Edit `deploy/capstone-backend.service` and set:
-
-- **WorkingDirectory** – full path to the Backend project on the Pi (e.g. `/home/pi/PROJECTS/Capstone/Backend`).
-- **Environment PATH** – same base path, with `/venv/bin` (e.g. `/home/pi/PROJECTS/Capstone/Backend/venv/bin`).
-- **ExecStart** – full path to uvicorn in that venv (e.g. `/home/pi/PROJECTS/Capstone/Backend/venv/bin/uvicorn ...`).
-- **User** / **Group** – Linux user that owns the project (often `pi`).
-
-If the project or venv lives somewhere else (e.g. `/opt/capstone/Backend`), change all three paths to match.
-
-## 2. Install the service on the Pi
-
-Copy the unit file into systemd and enable it:
+**Python** — Use a venv in the project folder and install deps:
 
 ```bash
-# Copy the service file (use your actual Backend path)
+cd /path/to/Backend
+python3 -m venv venv
+source venv/bin/activate   # or `venv\Scripts\activate` on Windows when developing
+pip install -r requirements.txt
+```
+
+**Postgres** — Create a database (the default config expects something like `maintenance` on localhost). Put the real URL in `.env` as `DATABASE_URL`.
+
+**`.env`** — The app reads `PLC_HOST`, `DATABASE_URL`, `SCHEDULER_ENABLED`, retention/analysis intervals, SMTP if you use email alerts, etc. See `app/config.py` for the full set. For a field Pi you almost always want **`TESTING` unset or `0`** so you get the real PLC poll loop and Postgres, not the SQLite + synthetic demo mode.
+
+On first startup the app runs SQLAlchemy `create_all`, then **`sync_tables_for_all_devices`**, which creates the per-device reading/prediction/archive tables (`device_{id}_*`) for every row already in `devices`. If you add devices later (API or `seed_devices.py`), new tables are created when those devices are created or on the next process start. There’s no Alembic in this repo yet, so plan schema changes on Postgres manually or add migrations when you outgrow `create_all`.
+
+**Network** — The Pi needs to reach the PLC at `PLC_HOST` and Postgres at whatever host is in `DATABASE_URL`.
+
+When the process is up, APScheduler runs **unless** `SCHEDULER_ENABLED` is off or `TESTING` is on: periodic analysis (default every 15 minutes) and a daily retention job that archives old readings per device.
+
+## 1. Edit the unit file paths
+
+Open `deploy/capstone-backend.service` and line it up with your machine:
+
+- **WorkingDirectory** — Full path to this Backend repo.
+- **Environment PATH** — That path plus `venv/bin` so the service finds Python and Uvicorn.
+- **ExecStart** — Full path to `venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000` (change the port here if you need to).
+- **User** / **Group** — Account that should own the process (often `pi` on a Raspberry Pi).
+
+If everything lives under `/opt/capstone/Backend` instead, update all of those consistently.
+
+## 2. Install and enable systemd
+
+```bash
 sudo cp /home/pi/PROJECTS/Capstone/Backend/deploy/capstone-backend.service /etc/systemd/system/
-
-# Reload systemd
 sudo systemctl daemon-reload
-
-# Enable so it starts on boot
 sudo systemctl enable capstone-backend.service
-
-# Start it now (optional; it will also start on next boot)
 sudo systemctl start capstone-backend.service
 ```
 
-## 3. Check status and logs
+(`start` is optional if you’re fine waiting until the next reboot.)
+
+## 3. Logs and sanity checks
 
 ```bash
-# See if it’s running
 sudo systemctl status capstone-backend.service
-
-# View recent logs
 sudo journalctl -u capstone-backend.service -f
 ```
 
-## 4. Useful commands
+Hit `http://<pi-ip>:8000/docs` or the health route from another machine to confirm the API is listening.
 
-| Command | Purpose |
-|--------|--------|
-| `sudo systemctl start capstone-backend` | Start the service |
-| `sudo systemctl stop capstone-backend` | Stop the service |
-| `sudo systemctl restart capstone-backend` | Restart after code or .env changes |
-| `sudo systemctl disable capstone-backend` | Stop it from starting on boot |
+## 4. Commands you’ll use again
 
-## Prerequisites on the Pi
+| Command | What it does |
+|--------|----------------|
+| `sudo systemctl start capstone-backend.service` | Start now |
+| `sudo systemctl stop capstone-backend.service` | Stop |
+| `sudo systemctl restart capstone-backend.service` | Reload after code or `.env` changes |
+| `sudo systemctl disable capstone-backend.service` | Don’t start on boot |
 
-- **Python 3** and a **venv** in the Backend folder with `pip install -r requirements.txt`.
-- **PostgreSQL** installed and the `maintenance` database created; `.env` (or env) must have a correct `DATABASE_URL`.
-- **.env** in the Backend directory so the app loads `PLC_HOST`, `DATABASE_URL`, etc. on startup.
+Systemd accepts the short name `capstone-backend` for these too.
 
-### PostgreSQL password on the Pi
+## Postgres password errors
 
-If you see `password authentication failed for user "postgres"`, the password in `DATABASE_URL` does not match the PostgreSQL role. Set a password and match the URL, for example:
+If logs show `password authentication failed for user "postgres"`, the URL doesn’t match the DB role. Example fix:
 
 ```bash
 sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
 ```
 
-Then use `postgresql://postgres:postgres@localhost:5432/maintenance` in `.env`, or pick a different password and put it in the URL (format: `postgresql://USER:PASSWORD@host:5432/maintenance`).
+Then set `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/maintenance` in `.env`, or use your own user/password in the same URL shape.
 
-The service starts after the network and PostgreSQL (`After=network-online.target postgresql.service`). If PostgreSQL is not installed as a systemd service or has a different name, remove or change `postgresql.service` in the unit file.
+## If the service won’t start after Postgres
+
+The unit file says `After=network-online.target postgresql.service`. If your distro names the service differently (or you use Docker for Postgres), tweak or drop the `postgresql.service` bit so systemd isn’t waiting on the wrong unit.
+
+---
+
+For day-to-day development and pytest, see **TESTING.md**. For architecture and data layout, see **PROJECT_OVERVIEW.md**.

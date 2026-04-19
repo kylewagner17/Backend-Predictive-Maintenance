@@ -1,0 +1,2005 @@
+﻿
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\main.py
+================================================================================
+
+import os
+import threading
+
+from fastapi import FastAPI
+
+from app.config import settings
+from app.database import SessionLocal, engine
+from app.device_storage import sync_tables_for_all_devices
+from app import models
+from app.api import health, sensors, analysis, notifications
+from app.api.devices import router as devices_router
+from app.industrial.logging_setup import configure_logging
+from app.ingest.plc import plc_loop
+from app.ingest.synthetic import synthetic_loop
+
+_scheduler = None
+
+
+def create_app(run_plc_loop: bool | None = None) -> FastAPI:
+    """PLC thread off if os.environ TESTING is set (pytest) or settings.testing (POC)."""
+    global _scheduler
+
+    configure_logging(settings.log_level)
+
+    if run_plc_loop is None:
+        run_plc_loop = not os.environ.get("TESTING") and not settings.testing
+    models.Base.metadata.create_all(bind=engine)
+    _db = SessionLocal()
+    try:
+        sync_tables_for_all_devices(_db)
+    finally:
+        _db.close()
+    if settings.testing:
+        from seed_devices import ensure_demo_devices_seeded
+
+        db = SessionLocal()
+        try:
+            ensure_demo_devices_seeded(db)
+            print("[POC] TESTING=1: demo devices/tag maps ensured; using synthetic sensor feed.")
+        finally:
+            db.close()
+
+    app = FastAPI(title="Predictive Maintenance Backend")
+    app.include_router(health.router)
+    app.include_router(sensors.router)
+    app.include_router(devices_router)
+    app.include_router(analysis.router)
+    app.include_router(notifications.router)
+    if settings.testing:
+        threading.Thread(target=synthetic_loop, daemon=True).start()
+    elif run_plc_loop:
+        threading.Thread(target=plc_loop, daemon=True).start()
+
+    if settings.scheduler_enabled and not settings.testing:
+        from app.jobs.scheduler import start_scheduler
+
+        _scheduler = start_scheduler()
+
+    return app
+
+
+app = create_app()
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\config.py
+================================================================================
+
+import os
+
+from pydantic import AliasChoices, Field, field_validator, model_validator, ValidationInfo
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # TESTING is parsed from .env here; it is not always exported to os.environ.
+    testing: bool = Field(default=False, validation_alias=AliasChoices("TESTING", "testing"))
+
+    @field_validator("scheduler_enabled", mode="before")
+    @classmethod
+    def coerce_scheduler_enabled(cls, v):
+        if v is True or v == 1:
+            return True
+        if v is False or v == 0:
+            return False
+        if v is None or v == "":
+            return True
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("0", "false", "no", "off"):
+                return False
+            if s in ("1", "true", "yes", "on"):
+                return True
+        return bool(v)
+
+    @field_validator("testing", mode="before")
+    @classmethod
+    def coerce_testing(cls, v):
+        if v is True or v == 1:
+            return True
+        if v is False or v == 0:
+            return False
+        if v is None or v == "":
+            return False
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("0", "false", "no", "off"):
+                return False
+            if s in ("1", "true", "yes", "on"):
+                return True
+        return bool(v)
+
+    database_url: str = "postgresql://postgres:postgres@localhost:5432/maintenance"
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def use_sqlite_when_testing(cls, v: str, info: ValidationInfo) -> str:
+        if info.data.get("testing"):
+            return os.environ.get(
+                "TESTING_DATABASE_URL",
+                "sqlite:///./poc_maintenance.db",
+            )
+        return v
+
+    @model_validator(mode="after")
+    def force_sqlite_database_url_when_testing(self):
+        if self.testing:
+            sqlite_url = os.environ.get(
+                "TESTING_DATABASE_URL",
+                "sqlite:///./poc_maintenance.db",
+            )
+            object.__setattr__(self, "database_url", sqlite_url)
+        return self
+
+    plc_host: str = "192.168.0.4"
+    plc_poll_interval_seconds: float = 10.0
+
+    plc_status_write_enabled: bool = True
+    plc_connect_timeout_seconds: float = 5.0
+    plc_retry_attempts: int = 3
+    plc_retry_base_delay_seconds: float = 1.0
+
+    scheduler_enabled: bool = Field(default=True, validation_alias=AliasChoices("SCHEDULER_ENABLED", "scheduler_enabled"))
+    maintenance_analysis_interval_minutes: float = 15.0
+
+    sensor_readings_retention_days: int = 90
+    retention_batch_size: int = 2000
+    retention_job_hour_utc: int = 2
+    retention_job_minute_utc: int = 30
+
+    synthetic_poll_interval_seconds: float = 5.0
+    poc_analysis_interval_seconds: float = 30.0
+
+    db_echo: bool = False
+    log_level: str = "INFO"
+
+    notifications_enabled: bool = True
+
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    mail_from: str = ""  # e.g. "alerts@yourdomain.com"
+
+
+settings = Settings()
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\database.py
+================================================================================
+
+from app.config import settings
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+
+_connect_args = (
+    {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+)
+engine = create_engine(
+    settings.database_url,
+    echo=settings.db_echo,
+    connect_args=_connect_args,
+)
+
+SessionLocal = sessionmaker(
+    autocommit=False, 
+    autoflush=False, 
+    bind=engine
+)
+
+Base = declarative_base()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\models.py
+================================================================================
+
+from datetime import datetime
+
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy.orm import relationship
+
+from app.database import Base
+
+
+class Device(Base):
+    """Current PM status lives here; per-device time-series are in ``device_{id}_*`` tables."""
+
+    __tablename__ = "devices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    status = Column(String, default="OK")
+    status_updated_at = Column(DateTime(timezone=True), nullable=True)
+
+    tag_maps = relationship("PLCTagMap", back_populates="device")
+    status_tag_maps = relationship("PLCStatusTagMap", back_populates="device")
+
+
+class PLCTagMap(Base):
+    __tablename__ = "plc_tag_map"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tag_name = Column(String, unique=True, nullable=False, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id"), nullable=False)
+
+    device = relationship("Device", back_populates="tag_maps")
+
+
+class PLCStatusTagMap(Base):
+    """DINT written by backend: 0 OK, 1 INSPECT_SOON, 2 MAINTENANCE_REQUIRED."""
+
+    __tablename__ = "plc_status_tag_map"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tag_name = Column(String, unique=True, nullable=False, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id"), nullable=False)
+
+    device = relationship("Device", back_populates="status_tag_maps")
+
+
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String, unique=True, index=True, nullable=False)
+    device_id = Column(Integer, ForeignKey("devices.id"), nullable=True, index=True)
+    platform = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EmailSubscription(Base):
+    __tablename__ = "email_subscriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, nullable=False, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\schemas.py
+================================================================================
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+
+class SensorReadingCreate(BaseModel):
+    device_id: int
+    reading: float
+    status: str
+    recorded_at: datetime | None = None
+
+
+class SensorReadingResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    device_id: int
+    reading: float
+    status: str
+    timestamp: datetime
+
+
+class DeviceCreate(BaseModel):
+    name: str
+
+
+class DeviceResponse(DeviceCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    status: str
+    status_updated_at: datetime | None = None
+
+
+class TagMapCreate(BaseModel):
+    tag_name: str
+    device_id: int
+
+
+class StatusTagMapCreate(BaseModel):
+    tag_name: str
+    device_id: int
+
+
+class StatusTagMapResponse(StatusTagMapCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+
+
+class MaintenancePredictionCreate(BaseModel):
+    device_id: int
+    recommendation: str
+    confidence: float | None = None
+    details: str | None = None
+    readings_snapshot: list[dict[str, Any]] | None = None
+
+
+class MaintenancePredictionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    device_id: int
+    predicted_at: datetime
+    recommendation: str
+    confidence: float | None = None
+    details: str | None = None
+    readings_snapshot: list[dict[str, Any]] | None = None
+
+
+class PushSubscriptionCreate(BaseModel):
+    token: str
+    device_id: int | None = None
+    platform: str | None = None
+
+
+class PushSubscriptionResponse(PushSubscriptionCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: datetime
+
+
+class EmailSubscriptionCreate(BaseModel):
+    email: EmailStr
+    device_id: int | None = None
+
+
+class EmailSubscriptionResponse(EmailSubscriptionCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: datetime
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\device_storage.py
+================================================================================
+
+"""
+Per-device tables: ``device_{id}_readings``, ``device_{id}_predictions``,
+``device_{id}_readings_archive``. ``devices`` holds current PM status and ``status_updated_at``.
+"""
+from __future__ import annotations
+
+import datetime as dt
+from typing import Any
+
+from sqlalchemy import Column, DateTime, Float, Integer, JSON, String, Table, delete, func, insert, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
+
+from app import models
+from app.database import Base
+
+
+def readings_table_name(device_id: int) -> str:
+    return f"device_{device_id}_readings"
+
+
+def predictions_table_name(device_id: int) -> str:
+    return f"device_{device_id}_predictions"
+
+
+def readings_archive_table_name(device_id: int) -> str:
+    return f"device_{device_id}_readings_archive"
+
+
+def _readings_table(device_id: int) -> Table:
+    name = readings_table_name(device_id)
+    if name in Base.metadata.tables:
+        return Base.metadata.tables[name]
+    return Table(
+        name,
+        Base.metadata,
+        Column("id", Integer, primary_key=True, autoincrement=True),
+        Column("reading", Float, nullable=False),
+        Column("row_status", String, nullable=False),
+        Column("recorded_at", DateTime(timezone=True), nullable=False),
+    )
+
+
+def _predictions_table(device_id: int) -> Table:
+    name = predictions_table_name(device_id)
+    if name in Base.metadata.tables:
+        return Base.metadata.tables[name]
+    return Table(
+        name,
+        Base.metadata,
+        Column("id", Integer, primary_key=True, autoincrement=True),
+        Column("predicted_at", DateTime(timezone=True), nullable=False),
+        Column("recommendation", String, nullable=False),
+        Column("confidence", Float, nullable=True),
+        Column("details", String, nullable=True),
+        Column("readings_snapshot", JSON, nullable=True),
+    )
+
+
+def _readings_archive_table(device_id: int) -> Table:
+    name = readings_archive_table_name(device_id)
+    if name in Base.metadata.tables:
+        return Base.metadata.tables[name]
+    return Table(
+        name,
+        Base.metadata,
+        Column("id", Integer, primary_key=True, autoincrement=True),
+        Column("reading", Float, nullable=False),
+        Column("row_status", String, nullable=False),
+        Column("original_recorded_at", DateTime(timezone=True), nullable=False),
+        Column("archived_at", DateTime(timezone=True), nullable=False),
+    )
+
+
+def ensure_device_tables(engine: Engine, device_id: int) -> None:
+    for builder in (_readings_table, _predictions_table, _readings_archive_table):
+        builder(device_id).create(engine, checkfirst=True)
+
+
+class DeviceReadingRow:
+    __slots__ = ("id", "reading", "status", "timestamp")
+
+    def __init__(self, id: int, reading: float, status: str, timestamp: dt.datetime):
+        self.id = id
+        self.reading = reading
+        self.status = status
+        self.timestamp = timestamp
+
+
+class DevicePredictionRow:
+    __slots__ = (
+        "id",
+        "device_id",
+        "predicted_at",
+        "recommendation",
+        "confidence",
+        "details",
+        "readings_snapshot",
+    )
+
+    def __init__(
+        self,
+        id: int,
+        device_id: int,
+        predicted_at: dt.datetime,
+        recommendation: str,
+        confidence: float | None,
+        details: str | None,
+        readings_snapshot: Any,
+    ):
+        self.id = id
+        self.device_id = device_id
+        self.predicted_at = predicted_at
+        self.recommendation = recommendation
+        self.confidence = confidence
+        self.details = details
+        self.readings_snapshot = readings_snapshot
+
+
+def insert_reading(
+    db: Session,
+    device_id: int,
+    *,
+    reading: float,
+    row_status: str,
+    recorded_at: dt.datetime,
+) -> int:
+    t = _readings_table(device_id)
+    stmt = (
+        insert(t)
+        .values(reading=reading, row_status=row_status, recorded_at=recorded_at)
+        .returning(t.c.id)
+    )
+    return int(db.execute(stmt).scalar_one())
+
+
+def select_readings(db: Session, device_id: int, *, limit: int) -> list[DeviceReadingRow]:
+    t = _readings_table(device_id)
+    q = (
+        select(t.c.id, t.c.reading, t.c.row_status, t.c.recorded_at)
+        .order_by(t.c.recorded_at.desc(), t.c.id.desc())
+        .limit(limit)
+    )
+    rows = db.execute(q).all()
+    return [
+        DeviceReadingRow(r.id, r.reading, r.row_status, r.recorded_at) for r in rows
+    ]
+
+
+def insert_prediction(
+    db: Session,
+    device_id: int,
+    *,
+    predicted_at: dt.datetime,
+    recommendation: str,
+    confidence: float | None,
+    details: str | None,
+    readings_snapshot: list[dict[str, Any]] | None,
+) -> int:
+    t = _predictions_table(device_id)
+    stmt = (
+        insert(t)
+        .values(
+            predicted_at=predicted_at,
+            recommendation=recommendation,
+            confidence=confidence,
+            details=details,
+            readings_snapshot=readings_snapshot,
+        )
+        .returning(t.c.id)
+    )
+    return int(db.execute(stmt).scalar_one())
+
+
+def select_predictions(db: Session, device_id: int, *, limit: int) -> list[DevicePredictionRow]:
+    t = _predictions_table(device_id)
+    q = (
+        select(
+            t.c.id,
+            t.c.predicted_at,
+            t.c.recommendation,
+            t.c.confidence,
+            t.c.details,
+            t.c.readings_snapshot,
+        )
+        .order_by(t.c.predicted_at.desc(), t.c.id.desc())
+        .limit(limit)
+    )
+    rows = db.execute(q).all()
+    return [
+        DevicePredictionRow(
+            r.id,
+            device_id,
+            r.predicted_at,
+            r.recommendation,
+            r.confidence,
+            r.details,
+            r.readings_snapshot,
+        )
+        for r in rows
+    ]
+
+
+def archive_old_readings_batch(
+    db: Session,
+    device_id: int,
+    *,
+    cutoff: dt.datetime,
+    batch_size: int,
+) -> int:
+    t_r = _readings_table(device_id)
+    t_a = _readings_archive_table(device_id)
+    q = (
+        select(t_r.c.id, t_r.c.reading, t_r.c.row_status, t_r.c.recorded_at)
+        .where(t_r.c.recorded_at < cutoff)
+        .order_by(t_r.c.id.asc())
+        .limit(batch_size)
+    )
+    rows = db.execute(q).all()
+    if not rows:
+        return 0
+    now = dt.datetime.now(dt.timezone.utc)
+    for r in rows:
+        db.execute(
+            insert(t_a).values(
+                reading=r.reading,
+                row_status=r.row_status,
+                original_recorded_at=r.recorded_at,
+                archived_at=now,
+            )
+        )
+        db.execute(delete(t_r).where(t_r.c.id == r.id))
+    return len(rows)
+
+
+def count_readings(db: Session, device_id: int) -> int:
+    t = _readings_table(device_id)
+    return int(db.execute(select(func.count()).select_from(t)).scalar_one())
+
+
+def count_archived_readings(db: Session, device_id: int) -> int:
+    t = _readings_archive_table(device_id)
+    return int(db.execute(select(func.count()).select_from(t)).scalar_one())
+
+
+def sync_tables_for_all_devices(db: Session) -> None:
+    bind = db.get_bind()
+    for d in db.query(models.Device).all():
+        ensure_device_tables(bind, d.id)
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\crud.py
+================================================================================
+
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy.orm import Session
+
+from app import models, schemas
+from app.device_storage import (
+    DevicePredictionRow,
+    archive_old_readings_batch,
+    ensure_device_tables,
+    insert_prediction,
+    insert_reading,
+    select_predictions,
+    select_readings,
+)
+
+
+class SensorReadingPublic:
+    __slots__ = ("id", "device_id", "reading", "status", "timestamp")
+
+    def __init__(
+        self,
+        id: int,
+        device_id: int,
+        reading: float,
+        status: str,
+        timestamp: datetime,
+    ):
+        self.id = id
+        self.device_id = device_id
+        self.reading = reading
+        self.status = status
+        self.timestamp = timestamp
+
+
+def _as_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def create_device(db: Session, device: schemas.DeviceCreate):
+    db_device = models.Device(name=device.name)
+    db.add(db_device)
+    db.commit()
+    db.refresh(db_device)
+    ensure_device_tables(db.get_bind(), db_device.id)
+    return db_device
+
+
+def create_sensor_reading(db: Session, reading: schemas.SensorReadingCreate) -> SensorReadingPublic:
+    if reading.recorded_at is None:
+        recorded_at = datetime.now(timezone.utc)
+    else:
+        recorded_at = _as_utc(reading.recorded_at)
+
+    ensure_device_tables(db.get_bind(), reading.device_id)
+    rid = insert_reading(
+        db,
+        reading.device_id,
+        reading=reading.reading,
+        row_status=reading.status,
+        recorded_at=recorded_at,
+    )
+    db.commit()
+    return SensorReadingPublic(
+        rid,
+        reading.device_id,
+        reading.reading,
+        reading.status,
+        recorded_at,
+    )
+
+
+def get_devices(db: Session):
+    return db.query(models.Device).all()
+
+
+def get_device_by_id(db: Session, device_id: int):
+    return db.query(models.Device).filter(models.Device.id == device_id).first()
+
+
+def create_tag_map(db: Session, mapping: schemas.TagMapCreate):
+    existing = (
+        db.query(models.PLCTagMap)
+        .filter(models.PLCTagMap.tag_name == mapping.tag_name)
+        .first()
+    )
+
+    if existing:
+        existing.device_id = mapping.device_id
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    row = models.PLCTagMap(**mapping.model_dump())
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def get_device_by_tag(db: Session, tag_name: str):
+    return (
+        db.query(models.PLCTagMap)
+        .filter(models.PLCTagMap.tag_name == tag_name)
+        .first()
+    )
+
+
+def get_all_tag_mappings(db: Session):
+    return db.query(models.PLCTagMap).all()
+
+
+def create_maintenance_prediction(
+    db: Session, prediction: schemas.MaintenancePredictionCreate
+) -> DevicePredictionRow:
+    data = prediction.model_dump()
+    device_id = data["device_id"]
+    ensure_device_tables(db.get_bind(), device_id)
+    predicted_at = datetime.now(timezone.utc)
+    rid = insert_prediction(
+        db,
+        device_id,
+        predicted_at=predicted_at,
+        recommendation=data["recommendation"],
+        confidence=data.get("confidence"),
+        details=data.get("details"),
+        readings_snapshot=data.get("readings_snapshot"),
+    )
+    db.commit()
+    return DevicePredictionRow(
+        rid,
+        device_id,
+        predicted_at,
+        data["recommendation"],
+        data.get("confidence"),
+        data.get("details"),
+        data.get("readings_snapshot"),
+    )
+
+
+def get_predictions_for_device(db: Session, device_id: int, limit: int = 100):
+    ensure_device_tables(db.get_bind(), device_id)
+    return select_predictions(db, device_id, limit=limit)
+
+
+def get_readings_for_device(db: Session, device_id: int, limit: int = 1000):
+    ensure_device_tables(db.get_bind(), device_id)
+    rows = select_readings(db, device_id, limit=limit)
+    return [
+        SensorReadingPublic(r.id, device_id, r.reading, r.status, r.timestamp)
+        for r in rows
+    ]
+
+
+def update_device_status_field(db: Session, device_id: int, status: str) -> None:
+    dev = db.query(models.Device).filter(models.Device.id == device_id).first()
+    if dev:
+        dev.status = status
+        dev.status_updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+
+def create_status_tag_map(db: Session, mapping: schemas.StatusTagMapCreate):
+    existing = (
+        db.query(models.PLCStatusTagMap)
+        .filter(models.PLCStatusTagMap.tag_name == mapping.tag_name)
+        .first()
+    )
+    if existing:
+        existing.device_id = mapping.device_id
+        db.commit()
+        db.refresh(existing)
+        return existing
+    row = models.PLCStatusTagMap(**mapping.model_dump())
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def get_status_tag_map_for_device(db: Session, device_id: int):
+    return (
+        db.query(models.PLCStatusTagMap)
+        .filter(models.PLCStatusTagMap.device_id == device_id)
+        .first()
+    )
+
+
+def get_all_status_tag_mappings(db: Session):
+    return db.query(models.PLCStatusTagMap).all()
+
+
+def archive_sensor_readings_older_than(
+    db: Session,
+    *,
+    older_than_days: int,
+    batch_size: int = 2000,
+) -> int:
+    """Archive up to ``batch_size`` rows total across devices (oldest first per device)."""
+    if older_than_days <= 0:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    bind = db.get_bind()
+    device_ids = [row.id for row in db.query(models.Device.id).all()]
+    total_moved = 0
+    remaining = batch_size
+    for device_id in device_ids:
+        if remaining <= 0:
+            break
+        ensure_device_tables(bind, device_id)
+        moved = archive_old_readings_batch(
+            db, device_id, cutoff=cutoff, batch_size=remaining
+        )
+        total_moved += moved
+        remaining -= moved
+    db.commit()
+    return total_moved
+
+
+def get_latest_two_predictions_for_device(db: Session, device_id: int):
+    ensure_device_tables(db.get_bind(), device_id)
+    rows = select_predictions(db, device_id, limit=2)
+    if not rows:
+        return None, None
+    if len(rows) == 1:
+        return rows[0], None
+    return rows[0], rows[1]
+
+
+def create_push_subscription(db: Session, sub: schemas.PushSubscriptionCreate):
+    existing = db.query(models.PushSubscription).filter(models.PushSubscription.token == sub.token).first()
+    if existing:
+        existing.device_id = sub.device_id
+        existing.platform = sub.platform
+        db.commit()
+        db.refresh(existing)
+        return existing
+    row = models.PushSubscription(**sub.model_dump())
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def get_push_subscriptions_for_device(db: Session, device_id: int):
+    """Subscriptions that care about this device: device_id match or global (device_id is None)."""
+    return (
+        db.query(models.PushSubscription)
+        .filter(
+            (models.PushSubscription.device_id == device_id)
+            | (models.PushSubscription.device_id.is_(None))
+        )
+        .all()
+    )
+
+
+def create_email_subscription(db: Session, sub: schemas.EmailSubscriptionCreate):
+    existing = (
+        db.query(models.EmailSubscription)
+        .filter(
+            models.EmailSubscription.email == sub.email,
+            models.EmailSubscription.device_id == sub.device_id,
+        )
+        .first()
+    )
+    if existing:
+        return existing
+    row = models.EmailSubscription(**sub.model_dump())
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def get_email_subscriptions_for_device(db: Session, device_id: int):
+    """Emails that care about this device: device_id match or global (device_id is None)."""
+    return (
+        db.query(models.EmailSubscription)
+        .filter(
+            (models.EmailSubscription.device_id == device_id)
+            | (models.EmailSubscription.device_id.is_(None))
+        )
+        .all()
+    )
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\analysis\predict.py
+================================================================================
+
+"""Rule-based maintenance scoring from recent sensor readings."""
+
+from __future__ import annotations
+
+import os
+from statistics import mean, pstdev
+
+from sqlalchemy.orm import Session
+
+from app import crud, schemas
+from app.ingest.plc_status import push_maintenance_status_to_plc
+from app.notifications.push import notify_subscribers_on_recommendation_change
+
+# Limits align with seed_devices / synthetic device names.
+DEVICE_SPECS: dict[str, dict[str, float | str]] = {
+    "Conveyor_Bearing_Vibration": {"warn": 5.0, "crit": 8.0, "unit": "mm/s"},
+    "Pump_Discharge_Temperature": {"warn": 70.0, "crit": 85.0, "unit": "degC"},
+    "Spindle_Drive_Current": {"warn": 18.0, "crit": 22.0, "unit": "A"},
+    "Line_Air_Pressure": {"warn": 72.0, "crit": 65.0, "unit": "PSI"},
+    "Coolant_Tank_Level": {"warn": 35.0, "crit": 20.0, "unit": "%"},
+    "Hydraulic_System_Pressure": {"warn": 2800.0, "crit": 3200.0, "unit": "PSI"},
+}
+
+_DEFAULT_WARN = 500.0
+_DEFAULT_CRIT = 1000.0
+_MIN_SAMPLES_TREND = 5
+_WINDOW = 40
+_SMOOTH_SPAN = 3  # newest-only moving average for limit checks (spec devices)
+
+
+def _log_analysis_dataset_enabled() -> bool:
+    if os.environ.get("ANALYSIS_LOG_DATASET", "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
+
+def _readings_to_snapshot(readings) -> list[dict]:
+    """Same datapoints as analysis logging / per-device predictions JSON column."""
+    out: list[dict] = []
+    for r in readings:
+        ts = r.timestamp
+        ts_s = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+        out.append(
+            {
+                "id": r.id,
+                "recorded_at": ts_s,
+                "reading": r.reading,
+                "row_status": r.status,
+            }
+        )
+    return out
+
+
+def _print_analysis_dataset(device_id: int, device_name: str, readings) -> None:
+    lines = [
+        f"[ANALYSIS] dataset device_id={device_id} name={device_name!r} "
+        f"n={len(readings)} samples (newest first, limit={_WINDOW}):"
+    ]
+    for i, r in enumerate(readings):
+        ts = r.timestamp.isoformat() if hasattr(r.timestamp, "isoformat") else r.timestamp
+        lines.append(f"  [{i}] ts={ts}  reading={r.reading!r}  status={r.status!r}")
+    print("\n".join(lines))
+
+
+def _slope_simple(values_oldest_to_newest: list[float]) -> float:
+    n = len(values_oldest_to_newest)
+    if n < 2:
+        return 0.0
+    xs = list(range(n))
+    ys = values_oldest_to_newest
+    x_m = mean(xs)
+    y_m = mean(ys)
+    num = sum((x - x_m) * (y - y_m) for x, y in zip(xs, ys))
+    den = sum((x - x_m) ** 2 for x in xs) or 1e-9
+    return num / den
+
+
+def _smoothed_head(values_newest_first: list[float], span: int = _SMOOTH_SPAN) -> float:
+    if not values_newest_first:
+        return 0.0
+    take = values_newest_first[: min(span, len(values_newest_first))]
+    return mean(take)
+
+
+def _sustained_critical(
+    *,
+    low_is_bad: bool,
+    crit: float,
+    v0: float,
+    v1: float,
+) -> bool:
+    if low_is_bad:
+        return v0 <= crit and v1 <= crit
+    return v0 >= crit and v1 >= crit
+
+
+def _evaluate_device(name: str, values_newest_first: list[float]) -> tuple[str, float | None, str]:
+    """values_newest_first: time-desc (index 0 = newest). Returns recommendation, confidence, details."""
+    latest = values_newest_first[0]
+    spec = DEVICE_SPECS.get(name)
+    if spec:
+        warn = float(spec["warn"])
+        crit = float(spec["crit"])
+        unit = str(spec["unit"])
+        low_is_bad = name in ("Line_Air_Pressure", "Coolant_Tank_Level")
+        effective = _smoothed_head(values_newest_first, _SMOOTH_SPAN)
+
+        if low_is_bad:
+            if effective <= crit:
+                rec, conf, det = (
+                    "MAINTENANCE_REQUIRED",
+                    0.85,
+                    f"Smoothed {effective:.2f}{unit} at/below critical (<={crit}); latest={latest:.2f}.",
+                )
+            elif effective <= warn:
+                rec, conf, det = (
+                    "INSPECT_SOON",
+                    0.65,
+                    f"Smoothed {effective:.2f}{unit} below warning (<={warn}); latest={latest:.2f}.",
+                )
+            else:
+                rec, conf, det = None, None, ""
+        else:
+            if effective >= crit:
+                rec, conf, det = (
+                    "MAINTENANCE_REQUIRED",
+                    0.85,
+                    f"Smoothed {effective:.2f}{unit} at/above critical (>={crit}); latest={latest:.2f}.",
+                )
+            elif effective >= warn:
+                rec, conf, det = (
+                    "INSPECT_SOON",
+                    0.7,
+                    f"Smoothed {effective:.2f}{unit} above warning (>={warn}); latest={latest:.2f}.",
+                )
+            else:
+                rec, conf, det = None, None, ""
+
+        if rec == "MAINTENANCE_REQUIRED":
+            # Two raw samples must both be in critical; smoothed alone is not enough.
+            if len(values_newest_first) < 2:
+                rec, conf, det = (
+                    "INSPECT_SOON",
+                    0.6,
+                    det + " Downgraded: need 2+ samples to confirm critical.",
+                )
+            else:
+                v0, v1 = values_newest_first[0], values_newest_first[1]
+                if not _sustained_critical(low_is_bad=low_is_bad, crit=crit, v0=v0, v1=v1):
+                    rec, conf, det = (
+                        "INSPECT_SOON",
+                        0.62,
+                        det + " Downgraded: critical not sustained on last two raw samples.",
+                    )
+
+        if rec is None:
+            oldest_first = list(reversed(values_newest_first[:_WINDOW]))
+            if len(oldest_first) >= _MIN_SAMPLES_TREND:
+                slope = _slope_simple(oldest_first)
+                m = mean(oldest_first)
+                sd = pstdev(oldest_first) if len(oldest_first) > 1 else 0.0
+                if not low_is_bad and slope > 0 and latest > m + 0.5 * sd and latest > warn * 0.75:
+                    return (
+                        "INSPECT_SOON",
+                        0.55,
+                        f"Upward trend (slope={slope:.4f}/sample); mean={m:.2f}{unit}; latest={latest:.2f}.",
+                    )
+                if low_is_bad and slope < 0 and latest < m:
+                    return (
+                        "INSPECT_SOON",
+                        0.55,
+                        f"Falling trend (slope={slope:.4f}/sample); mean={m:.2f}{unit}; latest={latest:.2f}.",
+                    )
+
+            return "OK", 0.5, f"Within band; smoothed={effective:.2f}{unit} latest={latest:.2f}."
+
+        return rec, conf, det
+
+    # Unmapped device names: fixed thresholds for tests.
+    if latest >= _DEFAULT_CRIT:
+        return "MAINTENANCE_REQUIRED", 0.8, f"Latest reading {latest:.2f} >= {_DEFAULT_CRIT} (default scale)."
+    if latest >= _DEFAULT_WARN:
+        return "INSPECT_SOON", 0.65, f"Latest reading {latest:.2f} >= {_DEFAULT_WARN} (default scale)."
+    return "OK", 0.5, f"Latest reading {latest:.2f} within default OK band."
+
+
+def run_predictions_for_device(db: Session, device_id: int) -> str | None:
+    readings = crud.get_readings_for_device(db, device_id, limit=_WINDOW)
+    if not readings:
+        device = crud.get_device_by_id(db, device_id)
+        label = device.name if device else str(device_id)
+        print(f"[ANALYSIS] device_id={device_id} name={label!r} -> skipped (no readings)")
+        return None
+
+    latest_pred, _ = crud.get_latest_two_predictions_for_device(db, device_id)
+    old_recommendation = latest_pred.recommendation if latest_pred else None
+
+    device = crud.get_device_by_id(db, device_id)
+    device_name = device.name if device else f"device_{device_id}"
+    if _log_analysis_dataset_enabled():
+        _print_analysis_dataset(device_id, device_name, readings)
+    values_nf = [r.reading for r in readings]
+    recommendation, confidence, details = _evaluate_device(device_name, values_nf)
+
+    crud.create_maintenance_prediction(
+        db,
+        schemas.MaintenancePredictionCreate(
+            device_id=device_id,
+            recommendation=recommendation,
+            confidence=confidence,
+            details=details,
+            readings_snapshot=_readings_to_snapshot(readings),
+        ),
+    )
+
+    crud.update_device_status_field(db, device_id, recommendation)
+
+    conf_s = f"{confidence:.2f}" if confidence is not None else "n/a"
+    print(
+        f"[ANALYSIS] device_id={device_id} name={device_name!r} -> {recommendation} "
+        f"(confidence={conf_s}) | {details}"
+    )
+
+    notify_subscribers_on_recommendation_change(
+        db, device_id, device_name, old_recommendation, recommendation
+    )
+    return recommendation
+
+
+def run_predictions_all_devices(db: Session) -> dict[int, str]:
+    devices = crud.get_devices(db)
+    print(f"[ANALYSIS] Running predictions for {len(devices)} device(s)...")
+    outcomes: dict[int, str] = {}
+    for d in devices:
+        rec = run_predictions_for_device(db, d.id)
+        if rec is not None:
+            outcomes[d.id] = rec
+    print("[ANALYSIS] Cycle complete.")
+    push_maintenance_status_to_plc(db, outcomes)
+    return outcomes
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\ingest\plc.py
+================================================================================
+
+"""CompactLogix ingest: read mapped tags, persist floats to sensor_readings."""
+
+import logging
+import time
+
+from app import crud, schemas
+from app.config import settings
+from app.database import SessionLocal
+from app.ingest.plc_connection import logix_driver_session
+from app.industrial.retry import retry_with_backoff
+
+logger = logging.getLogger(__name__)
+
+
+def _tag_value_to_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def poll_plc() -> None:
+    db = SessionLocal()
+    try:
+        mappings = crud.get_all_tag_mappings(db)
+        if not mappings:
+            logger.info("PLC poll skipped (no tag mappings configured)")
+            return
+
+        tag_names = [m.tag_name for m in mappings]
+
+        def _read_tags():
+            with logix_driver_session() as plc:
+                return plc.read(*tag_names)
+
+        try:
+            results = retry_with_backoff(
+                _read_tags,
+                attempts=max(1, settings.plc_retry_attempts),
+                base_delay_sec=settings.plc_retry_base_delay_seconds,
+                operation_name="PLC tag read",
+            )
+        except Exception as e:
+            logger.error("PLC connection/read failed after retries: %s", e)
+            return
+
+        result_list = (
+            results
+            if results is not None and isinstance(results, list)
+            else ([results] if results is not None else [])
+        )
+
+        if not result_list:
+            logger.warning("PLC poll: empty response from controller")
+            return
+
+        lines: list[str] = []
+        saved_count = 0
+        for item in result_list:
+            tag_name = item.tag
+
+            if item.error:
+                lines.append(f"  {tag_name}: error - {item.error}")
+                continue
+
+            value = item.value
+            type_name = getattr(item, "type", None) or ""
+            suffix = f" ({type_name})" if type_name else ""
+            line = f"  {tag_name}: {value!r}{suffix}"
+
+            fval = _tag_value_to_float(value)
+            if fval is None:
+                lines.append(f"{line} -> not saved (non-numeric)")
+                continue
+
+            mapping = crud.get_device_by_tag(db, tag_name)
+            if not mapping:
+                lines.append(f"{line} -> not saved (no device mapping)")
+                continue
+
+            reading = schemas.SensorReadingCreate(
+                device_id=mapping.device_id,
+                reading=fval,
+                status="OK",
+            )
+            crud.create_sensor_reading(db, reading)
+            saved_count += 1
+            lines.append(f"{line} -> saved as reading {fval}")
+
+        logger.info("PLC poll data read:\n%s", "\n".join(lines))
+        if saved_count:
+            logger.info("PLC poll: %s sensor reading(s) saved", saved_count)
+        else:
+            logger.info("PLC poll: no sensor readings saved")
+
+    except Exception as e:
+        logger.exception("PLC poll database error: %s", e)
+
+    finally:
+        db.close()
+
+
+def plc_loop() -> None:
+    while True:
+        try:
+            poll_plc()
+        except Exception as e:
+            logger.exception("PLC loop crashed: %s", e)
+        time.sleep(settings.plc_poll_interval_seconds)
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\ingest\plc_connection.py
+================================================================================
+
+"""LogixDriver factory: some pycomm3 versions omit ``timeout`` on the constructor."""
+
+from __future__ import annotations
+
+import logging
+from contextlib import contextmanager
+from typing import Generator
+
+from pycomm3 import LogixDriver
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def logix_driver_session() -> Generator[LogixDriver, None, None]:
+    host = settings.plc_host
+    t = settings.plc_connect_timeout_seconds
+    driver: LogixDriver
+    if t and t > 0:
+        try:
+            driver = LogixDriver(host, timeout=t)
+        except TypeError:
+            logger.debug("LogixDriver does not accept timeout=; using default")
+            driver = LogixDriver(host)
+    else:
+        driver = LogixDriver(host)
+    with driver as plc:
+        yield plc
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\ingest\plc_status.py
+================================================================================
+
+"""Write PM recommendation codes to CompactLogix DINT tags (see RECOMMENDATION_TO_DINT)."""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING
+
+from app import crud
+from app.config import settings
+from app.ingest.plc_connection import logix_driver_session
+from app.industrial.retry import retry_with_backoff
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
+
+RECOMMENDATION_TO_DINT = {
+    "OK": 0,
+    "INSPECT_SOON": 1,
+    "MAINTENANCE_REQUIRED": 2,
+}
+
+
+def push_maintenance_status_to_plc(db: "Session", device_id_to_recommendation: dict[int, str]) -> None:
+    if settings.testing or not settings.plc_status_write_enabled:
+        logger.debug("PLC status write skipped (testing=%s enabled=%s)", settings.testing, settings.plc_status_write_enabled)
+        return
+    if not device_id_to_recommendation:
+        return
+
+    mappings = crud.get_all_status_tag_mappings(db)
+    if not mappings:
+        logger.debug("PLC status write skipped (no plc_status_tag_map rows)")
+        return
+
+    writes: list[tuple[str, int]] = []
+    for m in mappings:
+        rec = device_id_to_recommendation.get(m.device_id)
+        if rec is None:
+            continue
+        code = RECOMMENDATION_TO_DINT.get(rec)
+        if code is None:
+            logger.warning("Unknown recommendation %r for device_id=%s; skipping PLC write", rec, m.device_id)
+            continue
+        writes.append((m.tag_name, code))
+
+    if not writes:
+        return
+
+    def _write() -> None:
+        with logix_driver_session() as plc:
+            plc.write(*writes)
+
+    try:
+        retry_with_backoff(
+            _write,
+            attempts=max(1, settings.plc_retry_attempts),
+            base_delay_sec=settings.plc_retry_base_delay_seconds,
+            operation_name="PLC status tag write",
+        )
+        logger.info(
+            "PLC status write OK: %s tag(s) on %s",
+            len(writes),
+            settings.plc_host,
+        )
+    except Exception as e:
+        logger.error("PLC status write failed after retries: %s", e)
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\ingest\synthetic.py
+================================================================================
+
+"""Synthetic sensor feed when TESTING=1 (matches seed_devices names)."""
+from __future__ import annotations
+
+import math
+import random
+import time
+from typing import Any
+
+from app import crud, schemas
+from app.config import settings
+from app.database import SessionLocal
+from app.analysis.predict import run_predictions_all_devices
+
+
+# post_escalate_noise: after escalate_after, noise stdev (0 = stable readings so analysis
+# can emit MAINTENANCE_REQUIRED, which needs two consecutive raw samples past critical).
+_PROFILES: dict[str, dict[str, Any]] = {
+    "Conveyor_Bearing_Vibration": {
+        "base": 2.2,
+        "amp": 0.35,
+        "noise": 0.08,
+        "escalate_after": 10,
+        "escalate_rate": 0.28,
+        "post_escalate_noise": 0.0,
+    },
+    "Pump_Discharge_Temperature": {
+        "base": 52.0,
+        "amp": 0.4,
+        "noise": 0.15,
+        "escalate_after": 12,
+        "escalate_rate": 1.1,
+        "post_escalate_noise": 0.0,
+    },
+    "Spindle_Drive_Current": {
+        "base": 11.5,
+        "amp": 0.6,
+        "noise": 0.12,
+        "escalate_after": 9999,
+        "escalate_rate": 0.0,
+    },
+    "Line_Air_Pressure": {
+        "base": 87.0,
+        "amp": 4.0,
+        "noise": 0.5,
+        "escalate_after": 22,
+        "escalate_rate": -0.55,
+        "post_escalate_noise": 0.0,
+    },
+    "Coolant_Tank_Level": {
+        "base": 62.0,
+        "amp": 1.5,
+        "noise": 0.2,
+        "escalate_after": 9999,
+        "escalate_rate": 0.0,
+    },
+    "Hydraulic_System_Pressure": {
+        "base": 2100.0,
+        "amp": 80.0,
+        "noise": 25.0,
+        "escalate_after": 15,
+        "escalate_rate": 48.0,
+        "post_escalate_noise": 0.0,
+    },
+}
+
+_tick_by_device: dict[int, int] = {}
+
+
+def _value_for_device(name: str, tick: int) -> float:
+    p = _PROFILES.get(
+        name,
+        {"base": 50.0, "amp": 2.0, "noise": 0.5, "escalate_after": 9999, "escalate_rate": 0.0},
+    )
+    t = tick * 0.25
+    wave = math.sin(t) * p["amp"]
+    extra = 0.0
+    if tick >= p["escalate_after"]:
+        extra = (tick - p["escalate_after"]) * p["escalate_rate"]
+    if tick >= p["escalate_after"] and "post_escalate_noise" in p:
+        nstd = float(p["post_escalate_noise"])
+        noise = random.gauss(0, nstd)
+    else:
+        noise = random.gauss(0, p["noise"])
+    return max(0.0, p["base"] + wave + noise + extra)
+
+
+def _poll_synthetic_once() -> None:
+    db = SessionLocal()
+    try:
+        devices = crud.get_devices(db)
+        if not devices:
+            print("[SYNTHETIC] No devices in DB; run with TESTING=1 so seed runs at startup.")
+            return
+
+        for d in sorted(devices, key=lambda x: x.id):
+            tick = _tick_by_device.get(d.id, 0) + 1
+            _tick_by_device[d.id] = tick
+            value = _value_for_device(d.name, tick)
+            crud.create_sensor_reading(
+                db,
+                schemas.SensorReadingCreate(device_id=d.id, reading=round(value, 3), status="OK"),
+            )
+            print(f"[SYNTHETIC] device_id={d.id} name={d.name!r} reading={value:.3f} -> stored")
+    finally:
+        db.close()
+
+
+def synthetic_loop() -> None:
+    analysis_every = max(1, int(settings.poc_analysis_interval_seconds / max(settings.synthetic_poll_interval_seconds, 0.5)))
+    cycle = 0
+    print(
+        "[SYNTHETIC] POC ingest started (interval="
+        f"{settings.synthetic_poll_interval_seconds}s, analysis every {analysis_every} cycle(s)); "
+        "Conveyor/Pump/Hydraulic escalate to MAINTENANCE_REQUIRED; Line_Air drops toward low-pressure fault."
+    )
+    while True:
+        try:
+            _poll_synthetic_once()
+            cycle += 1
+            if cycle % analysis_every == 0:
+                db = SessionLocal()
+                try:
+                    print("[SYNTHETIC] Running predictive maintenance analysis...")
+                    run_predictions_all_devices(db)
+                finally:
+                    db.close()
+        except Exception as e:
+            print("[SYNTHETIC] loop error:", e)
+        time.sleep(settings.synthetic_poll_interval_seconds)
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\jobs\scheduler.py
+================================================================================
+
+"""Background jobs: periodic analysis and daily retention."""
+
+from __future__ import annotations
+
+import logging
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+
+from app.analysis.predict import run_predictions_all_devices
+from app.config import settings
+from app.database import SessionLocal
+from app.jobs import retention
+
+logger = logging.getLogger(__name__)
+
+
+def _scheduled_analysis_job() -> None:
+    db = SessionLocal()
+    try:
+        logger.info("Scheduled predictive maintenance analysis starting")
+        run_predictions_all_devices(db)
+    except Exception:
+        logger.exception("Scheduled analysis job failed")
+    finally:
+        db.close()
+
+
+def _scheduled_retention_job() -> None:
+    try:
+        n = 1
+        batches = 0
+        # Cap batches so one cron tick cannot run unbounded if the backlog is huge.
+        while n > 0 and batches < 50:
+            n = retention.run_sensor_readings_retention()
+            batches += 1
+    except Exception:
+        logger.exception("Scheduled retention job failed")
+
+
+def start_scheduler() -> BackgroundScheduler | None:
+    if not settings.scheduler_enabled or settings.testing:
+        logger.info("Background scheduler disabled (scheduler_enabled=%s testing=%s)", settings.scheduler_enabled, settings.testing)
+        return None
+
+    sched = BackgroundScheduler()
+    interval_min = max(1.0, float(settings.maintenance_analysis_interval_minutes))
+    sched.add_job(
+        _scheduled_analysis_job,
+        IntervalTrigger(minutes=interval_min),
+        id="maintenance_analysis",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        _scheduled_retention_job,
+        CronTrigger(
+            hour=settings.retention_job_hour_utc,
+            minute=settings.retention_job_minute_utc,
+        ),
+        id="sensor_readings_retention",
+        replace_existing=True,
+    )
+    sched.start()
+    logger.info(
+        "Scheduler started: analysis every %s min; retention daily at %02d:%02d UTC",
+        interval_min,
+        settings.retention_job_hour_utc,
+        settings.retention_job_minute_utc,
+    )
+    return sched
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\jobs\retention.py
+================================================================================
+
+"""Move aged rows from each ``device_{id}_readings`` table into ``device_{id}_readings_archive``."""
+
+from __future__ import annotations
+
+import logging
+
+from app import crud
+from app.config import settings
+from app.database import SessionLocal
+
+logger = logging.getLogger(__name__)
+
+
+def run_sensor_readings_retention() -> int:
+    """One batch; call repeatedly until it returns 0 if you need to drain a large backlog."""
+    db = SessionLocal()
+    try:
+        total = crud.archive_sensor_readings_older_than(
+            db,
+            older_than_days=settings.sensor_readings_retention_days,
+            batch_size=settings.retention_batch_size,
+        )
+        if total:
+            logger.info("Retention archived %s sensor reading row(s)", total)
+        return total
+    finally:
+        db.close()
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\api\health.py
+================================================================================
+
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/health", tags=["health"])
+
+@router.get("/")
+def get_health():
+    return {"status": "backend running"}
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\api\sensors.py
+================================================================================
+
+from app import crud, schemas
+from app.database import get_db
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+
+router = APIRouter(prefix="/sensors", tags=["sensors"])
+
+
+@router.post("/reading", response_model=schemas.SensorReadingResponse)
+def ingest_reading(
+    reading: schemas.SensorReadingCreate,
+    db: Session = Depends(get_db),
+):
+    return crud.create_sensor_reading(db, reading)
+
+
+@router.get("/readings/{device_id}", response_model=list[schemas.SensorReadingResponse])
+def get_readings(
+    device_id: int,
+    db: Session = Depends(get_db),
+    limit: int = Query(1000, ge=1, le=10000),
+):
+    return crud.get_readings_for_device(db, device_id, limit=limit)
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\api\devices.py
+================================================================================
+
+from app import crud, schemas
+from app.database import get_db
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+
+router = APIRouter(prefix="/devices", tags=["devices"])
+
+
+@router.get("/", response_model=list[schemas.DeviceResponse])
+def list_devices(db: Session = Depends(get_db)):
+    return crud.get_devices(db)
+
+
+@router.get("/{device_id}/predictions", response_model=list[schemas.MaintenancePredictionResponse])
+def get_device_predictions(
+    device_id: int,
+    db: Session = Depends(get_db),
+    limit: int = Query(100, ge=1, le=500),
+):
+    return crud.get_predictions_for_device(db, device_id, limit=limit)
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\api\analysis.py
+================================================================================
+
+from app import crud
+from app.analysis.predict import run_predictions_all_devices
+from app.database import get_db
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+router = APIRouter(prefix="/analysis", tags=["analysis"])
+
+
+@router.post("/run")
+def run_analysis(db: Session = Depends(get_db)):
+    """
+    Run predictive maintenance analysis for all devices.
+    Reads recent sensor data and writes results to maintenance_predictions.
+    """
+    run_predictions_all_devices(db)
+    return {"status": "ok", "message": "Predictions updated for all devices."}
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\api\notifications.py
+================================================================================
+
+"""
+Register for notifications when recommendation status changes: push (FCM/APNs) or email (SMTP).
+"""
+from app import crud, schemas
+from app.database import get_db
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+router = APIRouter(prefix="/notifications", tags=["notifications"])
+
+
+@router.post("/subscribe", response_model=schemas.PushSubscriptionResponse)
+def subscribe_push(
+    payload: schemas.PushSubscriptionCreate,
+    db: Session = Depends(get_db),
+):
+    """
+    Register a push token. Called by the mobile app after obtaining FCM/APNs token.
+    - token: the device push token
+    - device_id: optional; if set, only notify for this device; if null, notify for all devices
+    - platform: optional "ios" | "android" for provider selection
+    Same token re-registers (updates device_id/platform).
+    """
+    return crud.create_push_subscription(db, payload)
+
+
+@router.post("/subscribe-email", response_model=schemas.EmailSubscriptionResponse)
+def subscribe_email(
+    payload: schemas.EmailSubscriptionCreate,
+    db: Session = Depends(get_db),
+):
+    """
+    Register an email address to receive notifications when recommendation status changes.
+    - email: address to send to
+    - device_id: optional; if set, only this device; if null, all devices
+    Duplicate (email, device_id) is idempotent (returns existing).
+    """
+    return crud.create_email_subscription(db, payload)
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\notifications\push.py
+================================================================================
+
+"""
+Notify subscribers when recommendation changes (push stub; email via SMTP).
+"""
+from __future__ import annotations
+
+import logging
+
+from sqlalchemy.orm import Session
+
+from app import crud
+from app.config import settings
+from app.notifications.email import send_email
+
+logger = logging.getLogger(__name__)
+
+
+def send_push(token: str, title: str, body: str, platform: str | None = None) -> bool:
+    if not getattr(settings, "notifications_enabled", True):
+        logger.debug("Notifications disabled; would send to %s: %s - %s", token[:20], title, body)
+        return True
+
+    logger.info("PUSH [%s] %s: %s (token=%s...)", platform or "?", title, body, token[:24] if len(token) > 24 else token)
+    return True
+
+
+def notify_subscribers_on_recommendation_change(
+    db: Session,
+    device_id: int,
+    device_name: str,
+    old_recommendation: str | None,
+    new_recommendation: str,
+) -> None:
+    if old_recommendation == new_recommendation:
+        return
+
+    title = "Maintenance status changed"
+    body = f"{device_name}: {old_recommendation or 'N/A'} -> {new_recommendation}"
+
+    if getattr(settings, "notifications_enabled", True):
+        for sub in crud.get_push_subscriptions_for_device(db, device_id):
+            try:
+                send_push(sub.token, title, body, sub.platform)
+            except Exception as e:
+                logger.exception("Failed to send push to subscription %s: %s", sub.id, e)
+
+    if not getattr(settings, "notifications_enabled", True):
+        return
+    if not settings.smtp_host:
+        logger.debug("Email skipped (SMTP_HOST not set): %s", body)
+        return
+    for sub in crud.get_email_subscriptions_for_device(db, device_id):
+        try:
+            send_email(sub.email, title, body)
+        except Exception as e:
+            logger.exception("Failed to send email to %s: %s", sub.email, e)
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\notifications\email.py
+================================================================================
+
+"""SMTP mail (STARTTLS on 587 by default). Set SMTP_* and MAIL_FROM in .env."""
+from __future__ import annotations
+
+import logging
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+def send_email(to_email: str, subject: str, body: str) -> bool:
+    if not settings.smtp_host:
+        logger.info("Email (SMTP not configured): to=%s subject=%s body=%s", to_email, subject, body)
+        return True
+
+    from_addr = settings.mail_from or settings.smtp_user
+    if not from_addr:
+        logger.warning("Email not sent: MAIL_FROM or SMTP_USER required")
+        return False
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = to_email
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
+            server.starttls()
+            if settings.smtp_user and settings.smtp_password:
+                server.login(settings.smtp_user, settings.smtp_password)
+            server.sendmail(from_addr, [to_email], msg.as_string())
+        logger.info("Email sent to %s: %s", to_email, subject)
+        return True
+    except Exception as e:
+        logger.exception("Failed to send email to %s: %s", to_email, e)
+        return False
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\industrial\retry.py
+================================================================================
+
+"""Exponential backoff for retriable I/O (e.g. PLC round-trips)."""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import Callable, TypeVar
+
+logger = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+def retry_with_backoff(
+    fn: Callable[[], T],
+    *,
+    attempts: int = 3,
+    base_delay_sec: float = 1.0,
+    operation_name: str = "operation",
+) -> T:
+    last_exc: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            logger.warning(
+                "%s failed (attempt %s/%s): %s",
+                operation_name,
+                attempt,
+                attempts,
+                e,
+            )
+            if attempt < attempts:
+                time.sleep(base_delay_sec * (2 ** (attempt - 1)))
+    assert last_exc is not None
+    logger.error("%s exhausted all retries", operation_name)
+    raise last_exc
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\app\industrial\logging_setup.py
+================================================================================
+
+"""Application-wide logging format (stdout)."""
+
+from __future__ import annotations
+
+import logging
+import sys
+
+
+def configure_logging(level: str = "INFO") -> None:
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    lvl = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=lvl,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+        stream=sys.stdout,
+        force=False,
+    )
+
+
+================================================================================
+c:\Users\kylew\PROJECTS\Capstone\Backend\seed_devices.py
+================================================================================
+
+"""
+Idempotent seed: devices, plc_tag_map (inputs), plc_status_tag_map (DINT outputs).
+
+Run: python seed_devices.py
+Controller must define DINT tags for each PM_*_Status name (values 0/1/2).
+"""
+from app.database import SessionLocal
+from app import crud, models, schemas
+
+DEVICE_ROWS = [
+    ("Conveyor_Bearing_Vibration", "Conv_Bearing_Vib_mm_s", "PM_Conveyor_Bearing_Status"),
+    ("Pump_Discharge_Temperature", "Pump_Discharge_Temp_C", "PM_Pump_Discharge_Status"),
+    ("Spindle_Drive_Current", "Spindle_Drive_I_A", "PM_Spindle_Status"),
+    ("Line_Air_Pressure", "Line_AirPress_PSI", "PM_Line_Air_Status"),
+    ("Coolant_Tank_Level", "Coolant_Tank_Level_Pct", "PM_Coolant_Level_Status"),
+    ("Hydraulic_System_Pressure", "Hydraulic_Press_PSI", "PM_Hydraulic_Status"),
+]
+
+
+def ensure_demo_devices_seeded(db) -> None:
+    for device_name, tag_name, status_tag in DEVICE_ROWS:
+        existing = (
+            db.query(models.Device).filter(models.Device.name == device_name).first()
+        )
+        if existing:
+            device = existing
+        else:
+            device = crud.create_device(db, schemas.DeviceCreate(name=device_name))
+        crud.create_tag_map(
+            db,
+            schemas.TagMapCreate(tag_name=tag_name, device_id=device.id),
+        )
+        crud.create_status_tag_map(
+            db,
+            schemas.StatusTagMapCreate(tag_name=status_tag, device_id=device.id),
+        )
+
+
+def main() -> None:
+    db = SessionLocal()
+    try:
+        ensure_demo_devices_seeded(db)
+        print("Seed complete (devices + plc_tag_map + plc_status_tag_map).")
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    main()
+

@@ -1,58 +1,47 @@
-# Predictive Maintenance Backend — Overview
+# Predictive maintenance backend — overview
 
-## Intended flow
+This service ingests sensor-style readings, scores them with rule-based “predictive maintenance” logic, and exposes everything through a FastAPI API. Postgres is the intended production database; local POC mode can use SQLite.
 
-1. **PLC sensor data** → Allen-Bradley CompactLogix (EtherNet/IP) via pycomm3 in `app/ingest/plc.py`; reads controller tags.
-2. **Backend** → Maps tag names to devices via `plc_tag_map`, writes values to `sensor_readings`.
-3. **Database** → PostgreSQL stores devices, sensor_readings, and maintenance_predictions.
-4. **Analysis** → Logic in `app/analysis/` reads recent readings, runs your model, writes to `maintenance_predictions`. Trigger via `POST /analysis/run` or a scheduled job.
+## How data flows end to end
 
-## What’s in place
+1. **Inputs** — In production, `app/ingest/plc.py` polls a CompactLogix over EtherNet/IP (pycomm3), reads float tags, and maps each tag to a device via `plc_tag_map`. With `TESTING=1`, a synthetic thread can generate demo readings instead of hitting a PLC.
 
-- **Ingest**: PLC poll loop using pycomm3 LogixDriver; configurable PLC IP and poll interval (see `.env` / `app/config.py`).
-- **Models**: `Device`, `SensorReading`, `PLCTagMap`, `MaintenancePrediction`.
-- **API**: Health, devices, sensor readings (POST + GET by device), device predictions, and `POST /analysis/run`.
-- **Config**: PLC and DB settings via pydantic-settings (env vars / `.env`).
-- **Tests**: pytest with in-memory SQLite; API, CRUD, and analysis tests. See **TESTING.md** for running tests and TDD.
+2. **Storage** — Readings are not stored in one giant `sensor_readings` table anymore. Each device gets its own tables: `device_{id}_readings` for live samples (timestamped), `device_{id}_predictions` for each analysis run (also timestamped, including a JSON snapshot of the readings window used), and `device_{id}_readings_archive` for rows moved by retention.
 
-## Recommendations
+3. **Status row** — The `devices` table holds one row per asset: name, current recommendation string (`OK`, `INSPECT_SOON`, `MAINTENANCE_REQUIRED`, etc.), and `status_updated_at` when that status last changed. That’s the quick “what’s this machine doing right now?” view.
 
-1. **Scheduling analysis**  
-   Run analysis on a schedule (e.g. every 5–15 minutes) instead of only on demand. Options:
-   - **APScheduler** inside the FastAPI process (same as your PLC thread).
-   - **Celery** or **RQ** with Redis if you want a separate worker.
-   - **Cron** calling `POST /analysis/run` (or a management script that uses `run_predictions_all_devices`).
+4. **Analysis** — `app/analysis/predict.py` pulls the latest window of readings, applies device-specific thresholds (and some trend/smoothing rules), writes a prediction row, updates `devices.status`, can notify subscribers, and can mirror status to PLC DINT tags via `plc_status_tag_map`.
 
-2. **Implement real prediction logic**  
-   Replace the stub in `app/analysis/predict.py` with your approach, e.g.:
-   - Thresholds or trend (slope) on recent readings.
-   - Rolling mean/std and anomaly detection.
-   - Scikit-learn / TensorFlow model on features derived from readings (e.g. last N values, variance, min/max).
+5. **Triggers** — You can run analysis on demand with `POST /analysis/run`, or let APScheduler fire it on an interval in production. The synthetic POC loop also kicks analysis on its own timer when you’re in testing mode.
 
-3. **Migrations**  
-   Use **Alembic** for schema changes so you don’t rely only on `create_all` and can evolve the DB safely (e.g. new columns, indexes).
+## What you’ll find in the repo
 
-4. **Seed script**  
-   `seed_devices.py` will fail on a second run (duplicate devices/tag maps). Make it idempotent (e.g. get_or_create by name, create tag maps only if missing) or run it once and use migrations for future data changes.
+- **API** — Health, devices (list + predictions per device), sensor ingest (`POST /sensors/reading`, `GET /sensors/readings/{device_id}`), `POST /analysis/run`, and notification subscription endpoints.
+- **ORM models** — `Device`, `PLCTagMap`, `PLCStatusTagMap`, `PushSubscription`, `EmailSubscription`. Time-series live in dynamically named tables wired up in `app/device_storage.py`.
+- **Jobs** — `app/jobs/scheduler.py` runs periodic analysis (`maintenance_analysis_interval_minutes`, default 15) and a daily retention pass that archives old readings per device. Both respect `SCHEDULER_ENABLED` and stay off when `TESTING` is on.
+- **Config** — `app/config.py` + pydantic-settings: database URL, PLC host/poll interval, retry knobs, notification/SMTP flags, retention timing, synthetic POC timings, log level, etc.
 
-5. **Production**  
-   - Set `PLC_HOST` (CompactLogix IP) and `DATABASE_URL` in the environment (or `.env`), not in code.
-   - Use `db_echo=False` (default now) so logs aren’t filled with SQL.
-   - Consider turning off or reducing debug prints in `plc.py` (e.g. “Raw result”, “PLC values saved”) or gate them by a log level.
+## If you’re extending this
 
-6. **Indexes**  
-   For large tables, add indexes on:
-   - `sensor_readings (device_id, timestamp)` for analysis queries.
-   - `maintenance_predictions (device_id, predicted_at)` for listing by device.
+- **Swap in real ML** — The current engine is explicit rules and trends in `predict.py`. Dropping in sklearn, stats, or a small neural net is mostly “build features from the same reading window, return the same recommendation strings” so the PLC and UI layers keep working.
+- **Migrations** — Schema today still leans on `create_all` plus `ensure_device_tables` / `sync_tables_for_all_devices` for per-device tables. For a long-lived Postgres instance, Alembic (or another migration tool) is worth adding so you can alter `devices` and manage rollouts without surprises.
+- **Production hygiene** — Point `DATABASE_URL` and `PLC_HOST` at real infrastructure, keep `DB_ECHO` off unless you’re debugging SQL, and tune `MAINTENANCE_ANALYSIS_INTERVAL_MINUTES` and retention settings to match how chatty your plant is.
 
-7. **Frontend / dashboards**  
-   The API is ready for a UI to list devices, show recent readings, and show latest predictions (e.g. GET `/devices`, `/sensors/readings/{id}`, `/devices/{id}/predictions`).
-
-## Env vars (optional)
+## Handy env vars
 
 ```env
 DATABASE_URL=postgresql://user:pass@host:5432/maintenance
 PLC_HOST=192.168.1.10
 PLC_POLL_INTERVAL_SECONDS=10
+SCHEDULER_ENABLED=true
+MAINTENANCE_ANALYSIS_INTERVAL_MINUTES=15
 DB_ECHO=false
 ```
+
+See `app/config.py` for the full list (retention schedule, SMTP, synthetic intervals, etc.).
+
+## Seed data
+
+`seed_devices.py` is safe to run more than once: it upserts the demo devices and tag maps. You still need matching DINT tags on the controller if you want status writeback to work.
+
+For a deeper dive on running tests locally, see **TESTING.md**.

@@ -1,47 +1,58 @@
-# Testing and test-driven development (TDD)
+# Testing
 
-## Run tests
+Here’s how the test suite is wired up and how we usually work when changing behavior.
+
+## Running pytest
+
+From the project root (with dependencies installed):
 
 ```bash
-# Install dependencies (includes pytest, pytest-cov)
 pip install -r requirements.txt
 
-# Run all tests
 pytest -v
-
-# Run with coverage
 pytest --cov=app --cov-report=term-missing -v
 
-# Run specific file or test
 pytest test_api.py -v
 pytest test_crud.py::test_create_device -v
 ```
 
-## Layout
+On Windows, `python -m pytest ...` works the same way if `pytest` isn’t on your PATH.
 
-- **`conftest.py`** – Pytest fixtures:
-  - `db`: fresh SQLite in-memory session per test (tables created/dropped).
-  - `client`: FastAPI `TestClient` with `get_db` overridden to use the test DB so API tests don’t touch PostgreSQL.
-- **`test_api.py`** – API endpoint tests (health, devices, sensors, analysis, notifications).
-- **`test_crud.py`** – CRUD layer tests (devices, readings, tag map, predictions).
-- **`test_analysis.py`** – Analysis logic tests (threshold recommendations, run for all devices).
+## What `conftest.py` is doing
 
-When `TESTING=1` is set (done in `conftest.py` before importing the app), the PLC poll thread is not started.
+Before the FastAPI app imports, we:
 
-## TDD workflow
+- Set `TESTING=0` and `SCHEDULER_ENABLED=0` in the environment so the PLC background thread and APScheduler don’t start during test runs.
+- Point SQLAlchemy at a **single file-backed SQLite database** under the system temp directory (`capstone_test.db`). That sounds picky, but it matters: an in-memory SQLite DB can accidentally become *two* different databases depending on import order, which breaks API tests. One file keeps the app and pytest on the same data.
+- Monkey-patch `app.database.engine` and `SessionLocal` to that test engine, then import `app.main`. So when `TestClient` hits an endpoint, it uses the same DB as fixtures.
 
-1. **Red**: Write a failing test for the behavior you want (new endpoint, new CRUD function, or new analysis rule).
-2. **Green**: Implement the minimum code to make the test pass.
-3. **Refactor**: Clean up while keeping tests green.
+The `db` fixture opens a session, yields it, then closes and runs `metadata.drop_all` so the next test starts clean. Dynamic per-device tables (`device_{id}_readings`, etc.) live on the same metadata, so they get torn down with everything else.
 
-When adding a feature:
+The `client` fixture is just a `TestClient` around the shared app — no custom `get_db` override because the session factory already points at the test database.
 
-- Prefer adding a test in the right file (`test_api.py` for routes, `test_crud.py` for DB access, `test_analysis.py` for prediction logic).
-- Use the `client` fixture for HTTP tests and the `db` fixture when you need to seed data or assert on DB state directly.
-- Keep tests isolated: each test gets a fresh DB (for tests that use the `db` fixture).
+## Which files contain what
 
-## Adding new tests
+| File | Rough purpose |
+|------|----------------|
+| `test_api.py` | HTTP routes: health, devices, sensors, analysis, notifications |
+| `test_crud.py` | Database helpers: devices, readings, tag maps, predictions |
+| `test_analysis.py` | Prediction pipeline: windows, ordering, stored snapshots |
+| `test_industrial_poc.py` | PLC status codes, retention, scheduler gating, email gating, rule edge cases |
 
-- **New API route**: Add a test in `test_api.py` that calls the route via `client` and asserts status and JSON.
-- **New CRUD function**: Add a test in `test_crud.py` that calls the function with `db` and asserts on return value or query results.
-- **New analysis rule**: Add a test in `test_analysis.py` that creates readings via `db`, runs `run_predictions_for_device` or `run_predictions_all_devices`, and asserts on `maintenance_predictions`.
+## TDD in practice
+
+If you’re adding something new, the boring workflow still works well:
+
+1. Write a test that describes the behavior you want and watch it fail.
+2. Implement the smallest change that turns it green.
+3. Refactor if needed; keep pytest happy.
+
+Put the test next to the layer you’re touching: HTTP in `test_api.py`, pure DB in `test_crud.py`, scoring logic in `test_analysis.py` or `test_industrial_poc.py` depending on whether it’s core rules vs. industrial/PLC glue.
+
+A few practical notes:
+
+- Predictions and readings in tests go through the same CRUD paths the app uses, which means they land in **per-device tables**, not old global `sensor_readings` / `maintenance_predictions` names.
+- When you assert on predictions after `run_predictions_for_device`, you’re checking objects returned from `get_predictions_for_device` — including optional `readings_snapshot` JSON when analysis stored a window.
+- Keep tests independent: prefer the `db` fixture over relying on data left behind by another test.
+
+That’s enough to get oriented; run `pytest -v` before you push and you’re in good shape.
