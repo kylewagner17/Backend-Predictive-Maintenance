@@ -2,7 +2,11 @@
 import time
 
 from app import crud, schemas
-from app.analysis.predict import run_predictions_for_device, run_predictions_all_devices
+from app.analysis.predict import (
+    _compute_op300_outputs,
+    run_predictions_for_device,
+    run_predictions_all_devices,
+)
 
 
 def test_run_predictions_for_device_no_readings_does_nothing(db, capsys):
@@ -82,6 +86,51 @@ def test_run_predictions_for_device_multi_sample_dataset_order_newest_first(db, 
     preds = crud.get_predictions_for_device(db, dev.id)
     assert len(preds) == 1
     assert preds[0].recommendation == "OK"
+
+
+def test_op300_bootstrap_valves_good():
+    vg, ins, maint, c, *_ = _compute_op300_outputs(
+        success_acc=5.0,
+        unsuccess_acc=0.0,
+        prev_s=None,
+        prev_u=None,
+        consecutive=0,
+    )
+    assert (vg, ins, maint, c) == (1, 0, 0, 0)
+
+
+def test_op300_single_unsuccessful_inspection():
+    vg, ins, maint, c, *_ = _compute_op300_outputs(
+        success_acc=5.0,
+        unsuccess_acc=1.0,
+        prev_s=5.0,
+        prev_u=0.0,
+        consecutive=0,
+    )
+    assert (vg, ins, maint, c) == (0, 1, 0, 1)
+
+
+def test_op300_second_unsuccessful_maintenance():
+    """Second failure pulse while already on one consecutive → Maintenance."""
+    vg, ins, maint, c, *_ = _compute_op300_outputs(
+        success_acc=5.0,
+        unsuccess_acc=2.0,
+        prev_s=5.0,
+        prev_u=1.0,
+        consecutive=1,
+    )
+    assert maint == 1 and ins == 0 and vg == 0 and c == 2
+
+
+def test_op300_success_after_failure_valves_good():
+    vg, ins, maint, c, *_ = _compute_op300_outputs(
+        success_acc=6.0,
+        unsuccess_acc=2.0,
+        prev_s=5.0,
+        prev_u=2.0,
+        consecutive=2,
+    )
+    assert (vg, ins, maint, c) == (1, 0, 0, 0)
 
 
 def test_run_predictions_all_devices(db, capsys):

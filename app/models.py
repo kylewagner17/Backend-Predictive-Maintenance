@@ -31,7 +31,7 @@ class PLCTagMap(Base):
 
 
 class PLCStatusTagMap(Base):
-    """DINT written by backend: 0 OK, 1 INSPECT_SOON, 2 MAINTENANCE_REQUIRED."""
+    """DINT/Bool-style outputs: classic PM mode uses 0/1/2 per recommendation; OP300 mode uses 0/1 per tag."""
 
     __tablename__ = "plc_status_tag_map"
 
@@ -40,6 +40,17 @@ class PLCStatusTagMap(Base):
     device_id = Column(Integer, ForeignKey("devices.id"), nullable=False)
 
     device = relationship("Device", back_populates="status_tag_maps")
+
+
+class Op300ProcessState(Base):
+    """Singleton row (id=1) holding consecutive-failure tracking between OP300 counter polls."""
+
+    __tablename__ = "op300_process_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    consecutive_unsuccessful = Column(Integer, nullable=False, default=0)
+    prev_success_acc = Column(Float, nullable=True)
+    prev_unsuccess_acc = Column(Float, nullable=True)
 
 
 class PushSubscription(Base):

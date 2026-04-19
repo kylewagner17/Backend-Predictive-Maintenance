@@ -79,6 +79,34 @@ def get_device_by_id(db: Session, device_id: int):
     return db.query(models.Device).filter(models.Device.id == device_id).first()
 
 
+def get_device_by_name(db: Session, name: str):
+    return db.query(models.Device).filter(models.Device.name == name).first()
+
+
+def get_or_create_op300_state(db: Session) -> models.Op300ProcessState:
+    row = db.query(models.Op300ProcessState).filter(models.Op300ProcessState.id == 1).first()
+    if row is None:
+        row = models.Op300ProcessState(id=1, consecutive_unsuccessful=0)
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return row
+
+
+def save_op300_state(
+    db: Session,
+    *,
+    consecutive_unsuccessful: int,
+    prev_success_acc: float | None,
+    prev_unsuccess_acc: float | None,
+) -> None:
+    row = get_or_create_op300_state(db)
+    row.consecutive_unsuccessful = consecutive_unsuccessful
+    row.prev_success_acc = prev_success_acc
+    row.prev_unsuccess_acc = prev_unsuccess_acc
+    db.commit()
+
+
 def create_tag_map(db: Session, mapping: schemas.TagMapCreate):
     existing = (
         db.query(models.PLCTagMap)

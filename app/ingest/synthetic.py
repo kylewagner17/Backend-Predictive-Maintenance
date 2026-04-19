@@ -64,9 +64,16 @@ _PROFILES: dict[str, dict[str, Any]] = {
 }
 
 _tick_by_device: dict[int, int] = {}
+_synthetic_shared_cycle = 0
 
 
-def _value_for_device(name: str, tick: int) -> float:
+def _value_for_device(name: str, tick: int, *, shared_cycle: int | None = None) -> float:
+    """shared_cycle ties Successful_OP300s / Unsuccessful_OP300s ACC simulation to the same poll index."""
+    if name == "Successful_OP300s" and shared_cycle is not None:
+        return float(shared_cycle)
+    if name == "Unsuccessful_OP300s" and shared_cycle is not None:
+        return float(shared_cycle // 12)
+
     p = _PROFILES.get(
         name,
         {"base": 50.0, "amp": 2.0, "noise": 0.5, "escalate_after": 9999, "escalate_rate": 0.0},
@@ -85,6 +92,7 @@ def _value_for_device(name: str, tick: int) -> float:
 
 
 def _poll_synthetic_once() -> None:
+    global _synthetic_shared_cycle
     db = SessionLocal()
     try:
         devices = crud.get_devices(db)
@@ -92,10 +100,21 @@ def _poll_synthetic_once() -> None:
             print("[SYNTHETIC] No devices in DB; run with TESTING=1 so seed runs at startup.")
             return
 
+        op300_names = {"Successful_OP300s", "Unsuccessful_OP300s"}
+        if op300_names.issubset({d.name for d in devices}):
+            _synthetic_shared_cycle += 1
+
         for d in sorted(devices, key=lambda x: x.id):
+            if d.name == "OP300_Outputs":
+                continue
+            shared = (
+                _synthetic_shared_cycle
+                if d.name in op300_names and _synthetic_shared_cycle > 0
+                else None
+            )
             tick = _tick_by_device.get(d.id, 0) + 1
             _tick_by_device[d.id] = tick
-            value = _value_for_device(d.name, tick)
+            value = _value_for_device(d.name, tick, shared_cycle=shared)
             crud.create_sensor_reading(
                 db,
                 schemas.SensorReadingCreate(device_id=d.id, reading=round(value, 3), status="OK"),
