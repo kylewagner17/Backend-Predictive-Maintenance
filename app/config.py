@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # TESTING is parsed from .env here; it is not always exported to os.environ.
     testing: bool = Field(default=False, validation_alias=AliasChoices("TESTING", "testing"))
@@ -44,7 +44,10 @@ class Settings(BaseSettings):
                 return True
         return bool(v)
 
-    database_url: str = "postgresql://postgres:postgres@localhost:5432/maintenance"
+    database_url: str = Field(
+        default="postgresql://postgres:postgres@localhost:5432/maintenance",
+        validation_alias=AliasChoices("DATABASE_URL", "database_url"),
+    )
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -66,7 +69,10 @@ class Settings(BaseSettings):
             object.__setattr__(self, "database_url", sqlite_url)
         return self
 
-    plc_host: str = "192.168.0.4"
+    plc_host: str = Field(
+        default="192.168.0.4",
+        validation_alias=AliasChoices("PLC_HOST", "plc_host"),
+    )
     plc_poll_interval_seconds: float = 10.0
 
     plc_status_write_enabled: bool = True

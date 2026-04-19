@@ -30,6 +30,7 @@ def poll_plc() -> None:
             return
 
         tag_names = [m.tag_name for m in mappings]
+        logger.info("PLC poll reading %s tag(s): %s", len(tag_names), tag_names)
 
         def _read_tags():
             with logix_driver_session() as plc:
@@ -43,7 +44,11 @@ def poll_plc() -> None:
                 operation_name="PLC tag read",
             )
         except Exception as e:
-            logger.error("PLC connection/read failed after retries: %s", e)
+            logger.error(
+                "PLC connection/read failed after retries (host=%s from settings): %s",
+                settings.plc_host,
+                e,
+            )
             return
 
         result_list = (

@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 def logix_driver_session() -> Generator[LogixDriver, None, None]:
     host = settings.plc_host
     t = settings.plc_connect_timeout_seconds
+    logger.debug("LogixDriver connecting to host=%r timeout=%s", host, t)
     driver: LogixDriver
     if t and t > 0:
         try:

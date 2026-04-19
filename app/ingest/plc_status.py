@@ -65,7 +65,11 @@ def push_maintenance_status_to_plc(db: "Session", device_id_to_recommendation: d
             settings.plc_host,
         )
     except Exception as e:
-        logger.error("PLC status write failed after retries: %s", e)
+        logger.error(
+            "PLC status write failed after retries (host=%s): %s",
+            settings.plc_host,
+            e,
+        )
 
 
 _OP300_OUTPUT_ORDER = ("Valves_Good", "Inspection_Needed", "Maintenance")
@@ -126,4 +130,8 @@ def push_op300_outputs_to_plc(
             settings.plc_host,
         )
     except Exception as e:
-        logger.error("PLC OP300 write failed after retries: %s", e)
+        logger.error(
+            "PLC OP300 write failed after retries (host=%s): %s",
+            settings.plc_host,
+            e,
+        )
