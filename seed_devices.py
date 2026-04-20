@@ -4,7 +4,7 @@ Idempotent seed: devices, plc_tag_map (inputs), plc_status_tag_map (outputs).
 Run: python seed_devices.py
 Clears plc_tag_map, plc_status_tag_map, and devices (nulls subscription device_id FKs), then inserts rows below.
 
-OP300 layout: two CTU ACC inputs and three BOOL/DINT outputs on device OP300_Outputs.
+Bottle counter layout: CTU ACC tags Bottles_Pass / Bottles_Fail; three BOOL/DINT outputs on device OP300_Outputs.
 """
 from sqlalchemy import delete, update
 
@@ -12,8 +12,8 @@ from app.database import SessionLocal
 from app import crud, models, schemas
 
 INPUT_DEVICES = [
-    ("Successful_OP300s", "Successful_OP300s.ACC"),
-    ("Unsuccessful_OP300s", "Unsuccessful_OP300s.ACC"),
+    ("Bottles_Pass", "Bottles_Pass.ACC"),
+    ("Bottles_Fail", "Bottles_Fail.ACC"),
 ]
 
 OUTPUT_DEVICE_NAME = "OP300_Outputs"
@@ -67,7 +67,7 @@ def main() -> None:
     try:
         clear_seed_tables(db)
         ensure_demo_devices_seeded(db)
-        print("Seed complete (cleared + OP300 devices + plc_tag_map + plc_status_tag_map).")
+        print("Seed complete (cleared + bottle counter devices + plc_tag_map + plc_status_tag_map).")
     finally:
         db.close()
 

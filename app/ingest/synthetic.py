@@ -68,10 +68,10 @@ _synthetic_shared_cycle = 0
 
 
 def _value_for_device(name: str, tick: int, *, shared_cycle: int | None = None) -> float:
-    """shared_cycle ties Successful_OP300s / Unsuccessful_OP300s ACC simulation to the same poll index."""
-    if name == "Successful_OP300s" and shared_cycle is not None:
+    """shared_cycle ties Bottles_Pass / Bottles_Fail ACC simulation to the same poll index."""
+    if name == "Bottles_Pass" and shared_cycle is not None:
         return float(shared_cycle)
-    if name == "Unsuccessful_OP300s" and shared_cycle is not None:
+    if name == "Bottles_Fail" and shared_cycle is not None:
         return float(shared_cycle // 12)
 
     p = _PROFILES.get(
@@ -100,8 +100,8 @@ def _poll_synthetic_once() -> None:
             print("[SYNTHETIC] No devices in DB; run with TESTING=1 so seed runs at startup.")
             return
 
-        op300_names = {"Successful_OP300s", "Unsuccessful_OP300s"}
-        if op300_names.issubset({d.name for d in devices}):
+        bottle_counter_names = {"Bottles_Pass", "Bottles_Fail"}
+        if bottle_counter_names.issubset({d.name for d in devices}):
             _synthetic_shared_cycle += 1
 
         for d in sorted(devices, key=lambda x: x.id):
@@ -109,7 +109,7 @@ def _poll_synthetic_once() -> None:
                 continue
             shared = (
                 _synthetic_shared_cycle
-                if d.name in op300_names and _synthetic_shared_cycle > 0
+                if d.name in bottle_counter_names and _synthetic_shared_cycle > 0
                 else None
             )
             tick = _tick_by_device.get(d.id, 0) + 1

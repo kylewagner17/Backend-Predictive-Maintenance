@@ -28,17 +28,17 @@ _MIN_SAMPLES_TREND = 5
 _WINDOW = 40
 _SMOOTH_SPAN = 3  # newest-only moving average for limit checks (spec devices)
 
-_OP300_SUCCESS_NAME = "Successful_OP300s"
-_OP300_UNSUCCESS_NAME = "Unsuccessful_OP300s"
-_OP300_OUTPUT_DEVICE_NAME = "OP300_Outputs"
+_BOTTLES_PASS_NAME = "Bottles_Pass"
+_BOTTLES_FAIL_NAME = "Bottles_Fail"
+_BOTTLE_OUTPUT_DEVICE_NAME = "OP300_Outputs"
 
 
-def _should_run_op300_counter_analysis(devices) -> bool:
+def _should_run_bottle_counter_analysis(devices) -> bool:
     names = {d.name for d in devices}
     return (
-        _OP300_SUCCESS_NAME in names
-        and _OP300_UNSUCCESS_NAME in names
-        and _OP300_OUTPUT_DEVICE_NAME in names
+        _BOTTLES_PASS_NAME in names
+        and _BOTTLES_FAIL_NAME in names
+        and _BOTTLE_OUTPUT_DEVICE_NAME in names
     )
 
 
@@ -157,18 +157,18 @@ def _op300_recommendation_tag(
     return "OK"
 
 
-def run_op300_counter_predictions(db: Session) -> dict[int, str]:
-    dev_s = crud.get_device_by_name(db, _OP300_SUCCESS_NAME)
-    dev_u = crud.get_device_by_name(db, _OP300_UNSUCCESS_NAME)
-    dev_out = crud.get_device_by_name(db, _OP300_OUTPUT_DEVICE_NAME)
+def run_bottle_counter_predictions(db: Session) -> dict[int, str]:
+    dev_s = crud.get_device_by_name(db, _BOTTLES_PASS_NAME)
+    dev_u = crud.get_device_by_name(db, _BOTTLES_FAIL_NAME)
+    dev_out = crud.get_device_by_name(db, _BOTTLE_OUTPUT_DEVICE_NAME)
     if not dev_s or not dev_u or not dev_out:
-        print("[ANALYSIS] OP300 layout incomplete; skipping.")
+        print("[ANALYSIS] Bottle pass/fail counter layout incomplete; skipping.")
         return {}
 
     rs = crud.get_readings_for_device(db, dev_s.id, limit=1)
     ru = crud.get_readings_for_device(db, dev_u.id, limit=1)
     if not rs or not ru:
-        print("[ANALYSIS] OP300 skipped (missing readings on one or both counters)")
+        print("[ANALYSIS] Bottles_Pass / Bottles_Fail skipped (missing readings on one or both counters)")
         return {}
 
     s_acc = float(rs[0].reading)
@@ -206,8 +206,8 @@ def run_op300_counter_predictions(db: Session) -> dict[int, str]:
     old_recommendation = latest_pred.recommendation if latest_pred else None
 
     snap = [
-        {"tag": "Successful_OP300s.ACC", "reading": s_acc},
-        {"tag": "Unsuccessful_OP300s.ACC", "reading": u_acc},
+        {"tag": "Bottles_Pass.ACC", "reading": s_acc},
+        {"tag": "Bottles_Fail.ACC", "reading": u_acc},
     ]
 
     conf = 1.0 if maint or ins else (0.85 if vg else 0.5)
@@ -225,7 +225,10 @@ def run_op300_counter_predictions(db: Session) -> dict[int, str]:
 
     crud.update_device_status_field(db, dev_out.id, rec)
 
-    print(f"[ANALYSIS] OP300 counters S={s_acc} U={u_acc} → out VG={vg} INS={ins} MAINT={maint} | {details}")
+    print(
+        f"[ANALYSIS] Bottles_Pass/Bottles_Fail ACC S={s_acc} U={u_acc} → "
+        f"VG={vg} INS={ins} MAINT={maint} | {details}"
+    )
 
     notify_subscribers_on_recommendation_change(
         db,
@@ -248,9 +251,9 @@ def run_op300_counter_predictions(db: Session) -> dict[int, str]:
 
 def run_predictions_all_devices(db: Session) -> dict[int, str]:
     devices = crud.get_devices(db)
-    if _should_run_op300_counter_analysis(devices):
-        print("[ANALYSIS] OP300 dual-counter layout detected.")
-        return run_op300_counter_predictions(db)
+    if _should_run_bottle_counter_analysis(devices):
+        print("[ANALYSIS] Bottles_Pass / Bottles_Fail dual-counter layout detected.")
+        return run_bottle_counter_predictions(db)
 
     outcomes: dict[int, str] = {}
     print(f"[ANALYSIS] Running predictions for {len(devices)} device(s)...")
