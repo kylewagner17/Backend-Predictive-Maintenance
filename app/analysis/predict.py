@@ -59,7 +59,7 @@ def _compute_op300_outputs(
             0,
             success_acc,
             unsuccess_acc,
-            "OP300 bootstrap: Valves_Good=1",
+            "Bottle counters bootstrap: Valves_Good=1; baseline ACC recorded",
         )
 
     d_s = success_acc - prev_s
@@ -73,22 +73,10 @@ def _compute_op300_outputs(
             0,
             success_acc,
             unsuccess_acc,
-            "OP300 counter decreased (reset/wrap); latched cleared",
+            "Bottle counters decreased (reset/wrap); latched cleared",
         )
 
-    if d_s > 0:
-        had_failures = consecutive > 0
-        vg = 1 if had_failures else 0
-        return (
-            vg,
-            0,
-            0,
-            0,
-            success_acc,
-            unsuccess_acc,
-            f"OP300 successful pulse ΔS={d_s}; Valves_Good={vg}",
-        )
-
+    # Fail pulses first: same scan could theoretically move both; count failures first.
     if d_u > 0:
         incr = max(1, int(round(abs(d_u))))
         new_c = consecutive + incr
@@ -100,7 +88,7 @@ def _compute_op300_outputs(
                 new_c,
                 success_acc,
                 unsuccess_acc,
-                f"OP300 unsuccessful ΔU={d_u}; consecutive={new_c} → Maintenance",
+                f"Bottle fail pulse ΔU={d_u}; consecutive={new_c} → Maintenance",
             )
         return (
             0,
@@ -109,7 +97,19 @@ def _compute_op300_outputs(
             new_c,
             success_acc,
             unsuccess_acc,
-            f"OP300 unsuccessful ΔU={d_u}; consecutive=1 → Inspection_Needed",
+            f"Bottle fail pulse ΔU={d_u}; consecutive=1 → Inspection_Needed",
+        )
+
+    # Pass increased, fail unchanged (or both flat): good cycle — pulse Valves_Good and clear streak.
+    if d_s > 0:
+        return (
+            1,
+            0,
+            0,
+            0,
+            success_acc,
+            unsuccess_acc,
+            f"Bottle pass pulse ΔS={d_s}; Valves_Good=1 (consecutive streak cleared)",
         )
 
     if consecutive >= 2:
@@ -120,7 +120,7 @@ def _compute_op300_outputs(
             consecutive,
             success_acc,
             unsuccess_acc,
-            f"OP300 latched Maintenance (consecutive={consecutive})",
+            f"Latched Maintenance (consecutive={consecutive})",
         )
     if consecutive == 1:
         return (
@@ -130,7 +130,7 @@ def _compute_op300_outputs(
             consecutive,
             success_acc,
             unsuccess_acc,
-            f"OP300 latched Inspection_Needed (consecutive={consecutive})",
+            f"Latched Inspection_Needed (consecutive={consecutive})",
         )
 
     return (
@@ -140,7 +140,7 @@ def _compute_op300_outputs(
         consecutive,
         success_acc,
         unsuccess_acc,
-        "OP300 steady (no ACC delta)",
+        "Bottle counters steady (no ACC delta since last analysis)",
     )
 
 
@@ -206,8 +206,8 @@ def run_bottle_counter_predictions(db: Session) -> dict[int, str]:
     old_recommendation = latest_pred.recommendation if latest_pred else None
 
     snap = [
-        {"tag": "Bottles_Pass.ACC", "reading": s_acc},
-        {"tag": "Bottles_Fail.ACC", "reading": u_acc},
+        {"tag": "Bottles_PASS.ACC", "reading": s_acc},
+        {"tag": "Bottles_FAIL.ACC", "reading": u_acc},
     ]
 
     conf = 1.0 if maint or ins else (0.85 if vg else 0.5)

@@ -12,8 +12,8 @@ from app.database import SessionLocal
 from app import crud, models, schemas
 
 INPUT_DEVICES = [
-    ("Bottles_Pass", "Bottles_Pass.ACC"),
-    ("Bottles_Fail", "Bottles_Fail.ACC"),
+    ("Bottles_Pass", "Bottles_PASS.ACC"),
+    ("Bottles_Fail", "Bottles_FAIL.ACC"),
 ]
 
 OUTPUT_DEVICE_NAME = "OP300_Outputs"

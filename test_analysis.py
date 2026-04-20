@@ -133,6 +133,18 @@ def test_op300_success_after_failure_valves_good():
     assert (vg, ins, maint, c) == (1, 0, 0, 0)
 
 
+def test_op300_pass_increment_only_valves_good():
+    """Pass ACC increased, fail unchanged — always pulse Valves_Good (e.g. 10→11 with fail stuck at 2)."""
+    vg, ins, maint, c, *_ = _compute_op300_outputs(
+        success_acc=11.0,
+        unsuccess_acc=2.0,
+        prev_s=10.0,
+        prev_u=2.0,
+        consecutive=0,
+    )
+    assert (vg, ins, maint, c) == (1, 0, 0, 0)
+
+
 def test_run_predictions_all_devices(db, capsys):
     d1 = crud.create_device(db, schemas.DeviceCreate(name="D1"))
     d2 = crud.create_device(db, schemas.DeviceCreate(name="D2"))
