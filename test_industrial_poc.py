@@ -122,6 +122,7 @@ def test_poc_plc_push_skipped_in_testing_mode(db, monkeypatch):
 def test_poc_email_only_when_smtp_configured(monkeypatch, db):
     monkeypatch.setattr("app.notifications.push.settings.notifications_enabled", True)
     monkeypatch.setattr("app.notifications.push.settings.smtp_host", "")
+    monkeypatch.setattr("app.notifications.push.settings.notification_alert_email", "")
     sent: list[tuple] = []
 
     def capture(to, subj, body):

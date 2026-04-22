@@ -48,8 +48,18 @@ def notify_subscribers_on_recommendation_change(
     if not settings.smtp_host:
         logger.debug("Email skipped (SMTP_HOST not set): %s", body)
         return
+
+    sent_lower: set[str] = set()
     for sub in crud.get_email_subscriptions_for_device(db, device_id):
         try:
             send_email(sub.email, title, body)
+            sent_lower.add(sub.email.strip().lower())
         except Exception as e:
             logger.exception("Failed to send email to %s: %s", sub.email, e)
+
+    extra = (settings.notification_alert_email or "").strip()
+    if extra and extra.lower() not in sent_lower:
+        try:
+            send_email(extra, title, body)
+        except Exception as e:
+            logger.exception("Failed to send alert email to %s: %s", extra, e)

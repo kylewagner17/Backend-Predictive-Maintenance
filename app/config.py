@@ -102,5 +102,13 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     mail_from: str = ""  # e.g. "alerts@yourdomain.com"
 
+    notification_alert_email: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "NOTIFICATION_ALERT_EMAIL",
+            "notification_alert_email",
+        ),
+    )
+
 
 settings = Settings()
