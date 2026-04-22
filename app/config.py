@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     plc_retry_base_delay_seconds: float = 1.0
 
     scheduler_enabled: bool = Field(default=True, validation_alias=AliasChoices("SCHEDULER_ENABLED", "scheduler_enabled"))
+    # Supports sub-minute (e.g. 0.08333 ≈ 5 s). Used as minutes → seconds in scheduler.
     maintenance_analysis_interval_minutes: float = 15.0
 
     sensor_readings_retention_days: int = 90

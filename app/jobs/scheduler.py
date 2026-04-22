@@ -15,6 +15,9 @@ from app.jobs import retention
 
 logger = logging.getLogger(__name__)
 
+# Smallest allowed analysis period (avoids tight spin / zero).
+_MIN_ANALYSIS_INTERVAL_SECONDS = 1.0
+
 
 def _scheduled_analysis_job() -> None:
     db = SessionLocal()
@@ -45,10 +48,14 @@ def start_scheduler() -> BackgroundScheduler | None:
         return None
 
     sched = BackgroundScheduler()
-    interval_min = max(1.0, float(settings.maintenance_analysis_interval_minutes))
+    interval_minutes = float(settings.maintenance_analysis_interval_minutes)
+    interval_sec = max(
+        _MIN_ANALYSIS_INTERVAL_SECONDS,
+        interval_minutes * 60.0,
+    )
     sched.add_job(
         _scheduled_analysis_job,
-        IntervalTrigger(minutes=interval_min),
+        IntervalTrigger(seconds=interval_sec),
         id="maintenance_analysis",
         replace_existing=True,
         max_instances=1,
@@ -65,8 +72,9 @@ def start_scheduler() -> BackgroundScheduler | None:
     )
     sched.start()
     logger.info(
-        "Scheduler started: analysis every %s min; retention daily at %02d:%02d UTC",
-        interval_min,
+        "Scheduler started: analysis every %s s (%.6g min); retention daily at %02d:%02d UTC",
+        interval_sec,
+        interval_sec / 60.0,
         settings.retention_job_hour_utc,
         settings.retention_job_minute_utc,
     )
